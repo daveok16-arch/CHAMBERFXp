@@ -1,0 +1,6 @@
+{
+  "name": "AI Trading Signal Bot",
+  "description": "An expert AI-Powered Algorithmic Trading Bot dashboard matching premium ChamberFX styling, real-time Yahoo Finance Forex majors, crosses, and detailed market condition analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

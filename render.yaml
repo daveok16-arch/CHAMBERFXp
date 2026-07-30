@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ai-trading-signal-bot
+    env: node
+    plan: free
+    buildCommand: npm install && (pip3 install -r requirements.txt || true) && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
