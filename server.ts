@@ -1563,7 +1563,7 @@ async function bootstrap() {
   if (process.env.NODE_ENV !== "production") {
     // In development mode, mount Vite direct server middleware
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true },
       appType: "spa"
     });
     
