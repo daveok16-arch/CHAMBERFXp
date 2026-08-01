@@ -62,27 +62,29 @@ export interface BacktestResults {
     sharpeRatio: number;
     sortinoRatio: number;
     maxDrawdown: number;
+    expectancy?: number;
+    avgWin?: number;
+    avgLoss?: number;
   };
-  candles: Array<{
-    time: number;
-    formattedTime: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-    rsi: number;
-    macdHist: number;
-    adx: number;
-    atr: number;
-    bbWidth: number;
-    direction: number;
-    confidence: number;
-    action: string;
-    reason: string;
-    equity: number;
-  }>;
+  equityCurve: number[];
   trades: Array<ExecutionLog>;
+}
+
+export interface WalkForwardResults {
+  windows: Array<BacktestResults & { window_start: number; window_end: number }>;
+  avg_return: number;
+  avg_win_rate: number;
+  avg_sharpe: number;
+  consistency: number;
+}
+
+export interface MonteCarloResults {
+  median_equity: number;
+  percentile_5: number;
+  percentile_95: number;
+  max_loss: number;
+  max_win: number;
+  probability_of_profit: number;
 }
 
 export interface ForexPairData {
@@ -92,6 +94,66 @@ export interface ForexPairData {
   highRate: number;
   lowRate: number;
   changePct: number;
+}
+
+export interface MarketRegime {
+  type: "TRENDING" | "RANGING" | "VOLATILE";
+  adx: number;
+  atr: number;
+  plus_di: number;
+  minus_di: number;
+  description: string;
+}
+
+export interface SignalQuality {
+  compositeScore: number;
+  mlConfidence: number;
+  rsiAlignment: number;
+  trendStrength: number;
+  mtfAlignment: number;
+  volumeConfirmation: number;
+  adxConfirmation: number;
+}
+
+export interface EnhancedIndicators {
+  rsi: number;
+  rsi_7: number;
+  rsi_smooth: number;
+  stoch_k: number;
+  stoch_d: number;
+  cci: number;
+  momentum: number;
+  roc: number;
+  williams_r: number;
+  ultimate_osc: number;
+  macd_line: number;
+  macd_signal: number;
+  macd_hist: number;
+  adx: number;
+  plus_di: number;
+  minus_di: number;
+  supertrend_dir: number;
+  atr: number;
+  bb_width: number;
+  bb_position: number;
+}
+
+export interface TradingPair {
+  symbol: string;
+  name: string;
+  type: "CRYPTO" | "FOREX" | "COMMODITY";
+  priority: number;
+}
+
+export interface MarketStatus {
+  name: string;
+  isOpen: boolean;
+  sessions: {
+    london: boolean;
+    newYork: boolean;
+    tokyo: boolean;
+    sydney: boolean;
+  };
 }
 
 export interface AuditedSignalItem {
@@ -118,5 +180,7 @@ export interface AuditedSignalItem {
   timeToClose?: string;
   confidence?: number;
   reason?: string;
+  signalScore?: number;
+  marketRegime?: "TRENDING" | "RANGING" | "VOLATILE";
+  riskReward?: number;
 }
-

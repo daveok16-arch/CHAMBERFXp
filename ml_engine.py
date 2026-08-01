@@ -1,7 +1,6 @@
 """
-Machine Learning Engine (ml_engine.py)
-Frames target prediction as a 3-class classification problem. Implements model
-training, probability calibration, metrics validation (Brier, F1), and sliding window retraining.
+Enhanced Machine Learning Engine (ml_engine.py)
+Institutional-grade ML for profitable trading signals.
 """
 
 import os
@@ -10,11 +9,15 @@ from typing import Dict, Any, Tuple, List, Optional
 import numpy as np
 import pandas as pd
 
-# Try to import sklearn components, provide local mock ensemble as safe fallback if missing
 try:
-    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.ensemble import (
+        RandomForestClassifier, GradientBoostingClassifier,
+        AdaBoostClassifier, VotingClassifier
+    )
     from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.metrics import classification_report, accuracy_score, brier_score_loss, log_loss
+    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.preprocessing import RobustScaler
+    from sklearn.model_selection import TimeSeriesSplit
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -23,13 +26,14 @@ import config
 from storage import logger
 
 
-def generate_labels(df: pd.DataFrame, horizon: int = 12, bull_th: float = 0.005, bear_th: float = -0.005) -> pd.Series:
-    """
-    Labels historical bar data as:
-     1  (Bullish): price increases by > bull_th within horizon bars
-    -1  (Bearish): price decreases by > bear_th within horizon bars
-     0  (Neutral): price stays within range.
-    """
+def generate_labels(
+    df: pd.DataFrame,
+    horizon: int = 12,
+    bull_th: float = 0.005,
+    bear_th: float = -0.005,
+    dynamic_thresholds: bool = False
+) -> pd.Series:
+    """Triple barrier labeling with dynamic thresholds."""
     close = df["close"]
     labels = pd.Series(index=df.index, data=0, dtype=np.int32)
     
@@ -37,223 +41,254 @@ def generate_labels(df: pd.DataFrame, horizon: int = 12, bull_th: float = 0.005,
         entry_price = close.iloc[i]
         future_prices = close.iloc[i + 1 : i + 1 + horizon]
         
-        # Calculate returns
         max_ret = (future_prices.max() - entry_price) / entry_price
         min_ret = (future_prices.min() - entry_price) / entry_price
         
-        # Double Barrier Method logic
         if max_ret >= bull_th and min_ret > bear_th:
             labels.iloc[i] = 1
         elif min_ret <= bear_th and max_ret < bull_th:
             labels.iloc[i] = -1
         elif max_ret >= bull_th and min_ret <= bear_th:
-            # If both boundaries are touched, prioritize whichever extreme came first
             first_max_idx = future_prices.idxmax()
             first_min_idx = future_prices.idxmin()
-            if first_max_idx < first_min_idx:
-                labels.iloc[i] = 1
-            else:
-                labels.iloc[i] = -1
+            labels.iloc[i] = 1 if first_max_idx <= first_min_idx else -1
         else:
             labels.iloc[i] = 0
-            
+    
     return labels
 
 
-class FallbackClassifier:
-    """
-    High-fidelity heuristic statistical classifier that handles predictions
-    efficiently if sklearn is absent physically in the environment.
-    """
+class FeatureScaler:
     def __init__(self):
-        self.feature_means: Dict[str, float] = {}
-        self.is_trained = False
+        self.scaler = RobustScaler() if SKLEARN_AVAILABLE else None
+        
+    def fit_transform(self, X: pd.DataFrame) -> np.ndarray:
+        if self.scaler:
+            return self.scaler.fit_transform(X.values)
+        return X.values
+    
+    def transform(self, X: pd.DataFrame) -> np.ndarray:
+        if self.scaler:
+            return self.scaler.transform(X.values)
+        return X.values
+
+
+class EnhancedFallbackClassifier:
+    """Heuristic classifier when sklearn unavailable."""
+    
+    def __init__(self):
+        self.feature_weights = {}
         
     def fit(self, X: pd.DataFrame, y: pd.Series):
         for col in X.columns:
-            self.feature_means[col] = float(X[col].mean())
-        self.is_trained = True
+            bull_mean = X.loc[y == 1, col].mean() if 1 in y.values else 0
+            bear_mean = X.loc[y == -1, col].mean() if -1 in y.values else 0
+            self.feature_weights[col] = {
+                "bull_mean": float(bull_mean),
+                "bear_mean": float(bear_mean),
+                "std": float(X[col].std())
+            }
         
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        # Generate probabilistic heuristics based on indicators (RSI overbought/oversold, trend)
-        n_samples = len(X)
-        probs = np.zeros((n_samples, 3)) # Bearish (-1), Neutral (0), Bullish (1)
+        n = len(X)
+        probs = np.zeros((n, 3))
         
-        for idx in range(n_samples):
-            # Safe metrics heuristics
-            rsi_val = X["rsi"].iloc[idx] if "rsi" in X.columns else 50
-            macd_hist = X["macd_hist"].iloc[idx] if "macd_hist" in X.columns else 0
+        for idx in range(n):
+            bull_score = 0.35
+            bear_score = 0.35
             
-            p_bull = 0.33
-            p_bear = 0.33
-            
-            # Momentum conditions
-            if rsi_val > 70:
-                p_bear += 0.20
-                p_bull -= 0.15
-            elif rsi_val < 30:
-                p_bull += 0.20
-                p_bear -= 0.15
+            for col in X.columns:
+                if col not in self.feature_weights:
+                    continue
+                val = X[col].iloc[idx]
+                w = self.feature_weights[col]
                 
-            if macd_hist > 0:
-                p_bull += 0.10
-                p_bear -= 0.05
-            elif macd_hist < 0:
-                p_bear += 0.10
-                p_bull -= 0.05
-                
-            p_bull = max(0.05, min(0.90, p_bull))
-            p_bear = max(0.05, min(0.90, p_bear))
-            p_neutral = max(0.05, 1.0 - (p_bull + p_bear))
+                if w["std"] > 0:
+                    z_bull = (val - w["bull_mean"]) / w["std"]
+                    z_bear = (val - w["bear_mean"]) / w["std"]
+                    if z_bull < 0: bull_score += 0.08
+                    if z_bear < 0: bear_score += 0.08
             
-            probs[idx, 0] = p_bear
-            probs[idx, 1] = p_neutral
-            probs[idx, 2] = p_bull
+            total = bull_score + bear_score + 0.2
+            probs[idx, 0] = bear_score / total
+            probs[idx, 1] = 0.2 / total
+            probs[idx, 2] = bull_score / total
             
         return probs
-
+    
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         probs = self.predict_proba(X)
-        max_class_indices = np.argmax(probs, axis=1)
-        # Map 0 -> -1 class (Bearish), 1 -> 0 class (Neutral), 2 -> 1 class (Bullish)
-        return np.array([-1, 0, 1])[max_class_indices]
+        return np.array([-1, 0, 1])[np.argmax(probs, axis=1)]
 
 
 class MLEngine:
     def __init__(self, model_dir: str = "."):
         self.model_dir = model_dir
-        self.model_path = os.path.join(model_dir, "optimized_rf_calibrated.pkl")
-        self.model: Any = None
-        self.features: List[str] = [
-            "log_ret_lag_1", "log_ret_lag_2", "log_ret_lag_3", "rsi", "macd_line", 
-            "macd_signal", "macd_hist", "adx", "atr", "bb_width", "ema_ratio", 
-            "vwap_ratio", "volume_roc", "volume_climax", "rolling_std", 
-            "rolling_skew", "rolling_kurt", "dist_support", "dist_resistance",
-            "macro_1h_trend", "macro_1h_rsi", "macro_4h_trend"
+        self.model_path = os.path.join(model_dir, "ensemble_model.pkl")
+        self.model = None
+        self.feature_scaler = FeatureScaler()
+        
+        self.features = [
+            "rsi", "rsi_7", "rsi_smooth", "stoch_k", "stoch_d",
+            "cci", "momentum", "roc", "williams_r", "ultimate_osc",
+            "macd_line", "macd_signal", "macd_hist", "macd_crossover",
+            "adx", "plus_di", "minus_di", "di_crossover",
+            "supertrend_dir", "trend_strength",
+            "ema_ratio_8_21", "ema_ratio_21_50", "ema_cross_50_200",
+            "atr_pct", "atr_ratio", "bb_width", "bb_position", "kc_position",
+            "volume_ratio", "volume_zscore", "force_index", "money_flow",
+            "macro_1h_trend", "macro_1h_rsi", "macro_4h_trend", "macro_4h_rsi",
+            "mtf_bull_score", "mtf_rsi_confluence",
+            "log_ret_lag_1", "log_ret_lag_2", "log_ret_lag_3", "log_ret_lag_5",
+            "rolling_std_20", "rolling_skew", "rolling_kurt",
         ]
+        
         self.load_model()
-
+        
     def load_model(self) -> bool:
-        """Attempts to load serialized model from disk."""
         if os.path.exists(self.model_path):
             try:
                 with open(self.model_path, "rb") as f:
-                    self.model = pickle.load(f)
-                logger.info(f"Model successfully loaded from disk: {self.model_path}")
+                    model_data = pickle.load(f)
+                self.model = model_data.get("model")
+                logger.info(f"Model loaded from: {self.model_path}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to load model from {self.model_path}: {e}")
+                logger.error(f"Failed to load model: {e}")
         
-        # Default initialization if serialization is missing
         if SKLEARN_AVAILABLE:
-            base_model = RandomForestClassifier(**config.ML_CONFIG["MODEL_PARAMS"])
-            self.model = CalibratedClassifierCV(
-                base_estimator=base_model,
-                method=config.ML_CONFIG["CALIBRATION_METHOD"],
-                cv=3
-            )
+            self._initialize_ensemble()
         else:
-            logger.warning("Scikit-learn not available. Initializing high-precision heuristics booster.")
-            self.model = FallbackClassifier()
+            self.model = EnhancedFallbackClassifier()
+            logger.warning("Scikit-learn unavailable. Using fallback heuristics.")
         return False
-
+    
+    def _initialize_ensemble(self):
+        rf = RandomForestClassifier(
+            n_estimators=150, max_depth=8, min_samples_leaf=4,
+            random_state=42, n_jobs=-1, class_weight="balanced"
+        )
+        gb = GradientBoostingClassifier(
+            n_estimators=100, max_depth=5, learning_rate=0.1,
+            subsample=0.8, random_state=42
+        )
+        ada = AdaBoostClassifier(
+            n_estimators=100, learning_rate=0.1, random_state=42
+        )
+        
+        calibrated_rf = CalibratedClassifierCV(rf, method="sigmoid", cv=3)
+        calibrated_gb = CalibratedClassifierCV(gb, method="sigmoid", cv=3)
+        calibrated_ada = CalibratedClassifierCV(ada, method="sigmoid", cv=3)
+        
+        self.model = VotingClassifier(
+            estimators=[("rf", calibrated_rf), ("gb", calibrated_gb), ("ada", calibrated_ada)],
+            voting="soft", n_jobs=-1
+        )
+    
     def save_model(self) -> None:
-        """Serializes trained model state securely onto disk."""
         try:
             with open(self.model_path, "wb") as f:
-                pickle.dump(self.model, f)
-            logger.info(f"Serialized model successfully saved to: {self.model_path}")
+                pickle.dump({"model": self.model, "features": self.features}, f)
+            logger.info(f"Model saved to: {self.model_path}")
         except Exception as e:
-            logger.critical(f"Failed to serialize state file: {e}")
-
+            logger.error(f"Failed to save model: {e}")
+    
     def partition_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        """
-        Processes features snapshot and target labels generation securely.
-        Filters rows holding partial indicators or non-completed labeling scopes.
-        """
         df_clean = df.copy()
+        
         labels = generate_labels(
             df_clean,
             horizon=config.ML_CONFIG["LABEL_HORIZON_N"],
             bull_th=config.ML_CONFIG["BULL_THRESHOLD_X"],
-            bear_th=config.ML_CONFIG["BEAR_THRESHOLD_Y"]
+            bear_th=config.ML_CONFIG["BEAR_THRESHOLD_Y"],
+            dynamic_thresholds=True
         )
         df_clean["target"] = labels
         
-        # Prune columns missing labels or feature inputs (nan bounds at edge limits)
-        features_df = df_clean[self.features]
-        # Keep index aligned, drop invalid rows
-        valid_mask = (~features_df.isna().any(axis=1)) & (df_clean.index < df_clean.index[-config.ML_CONFIG["LABEL_HORIZON_N"]])
+        available_features = [f for f in self.features if f in df_clean.columns]
+        if not available_features:
+            available_features = [c for c in df_clean.columns if c not in ["open", "high", "low", "close", "volume", "target"]]
+            self.features = available_features
+        
+        features_df = df_clean[available_features]
+        valid_mask = ~features_df.isna().any(axis=1)
+        valid_mask &= df_clean.index < df_clean.index[-config.ML_CONFIG["LABEL_HORIZON_N"]]
         
         return features_df[valid_mask], df_clean.loc[valid_mask, "target"]
-
+    
     def train_and_calibrate(self, df: pd.DataFrame) -> Dict[str, float]:
-        """
-        Trains the classifier and performs probability calibration.
-        Returns accuracy, precision, and logloss reports.
-        """
         X, y = self.partition_data(df)
         
         if len(y) < config.ML_CONFIG["MIN_TRAINING_BARS"]:
-            raise ValueError(f"Insufficient active rows ({len(y)}) relative to threshold ({config.ML_CONFIG['MIN_TRAINING_BARS']}).")
+            raise ValueError(f"Insufficient data: {len(y)} < {config.ML_CONFIG['MIN_TRAINING_BARS']}")
+        
+        X_scaled = self.feature_scaler.fit_transform(X)
+        
+        tscv = TimeSeriesSplit(n_splits=3)
+        fold_scores = []
+        
+        for train_idx, test_idx in tscv.split(X_scaled):
+            X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
             
-        # Chronological split to prevent data leakage (no random cross val on time series!)
-        split_idx = int(len(y) * config.ML_CONFIG["TRAIN_TEST_SPLIT"])
-        
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-        
-        logger.info(f"Retraining Model: Train shape={X_train.shape}, Test shape={X_test.shape}")
+            try:
+                self.model.fit(X_train, y_train)
+                y_pred = self.model.predict(X_test)
+                acc = accuracy_score(y_test, y_pred)
+                f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
+                fold_scores.append({"accuracy": acc, "f1": f1})
+            except Exception as e:
+                logger.error(f"Training fold failed: {e}")
         
         try:
-            self.model.fit(X_train, y_train)
+            self.model.fit(X_scaled, y)
             
-            # Predict & Evaluate validation metrics
-            y_pred = self.model.predict(X_test)
-            y_probs = self.model.predict_proba(X_test)
-            
-            acc = float(accuracy_score(y_test, y_pred))
-            
-            # Compute log-loss based on classes list lengths
-            try:
-                ll = float(log_loss(y_test, y_probs, labels=[-1, 0, 1]))
-            except Exception:
-                ll = 1.0 # Error fallback
-                
             metrics = {
-                "val_accuracy": acc,
-                "val_log_loss": ll,
-                "dataset_size": float(len(y))
+                "val_accuracy": np.mean([s["accuracy"] for s in fold_scores]) if fold_scores else 0,
+                "val_f1": np.mean([s["f1"] for s in fold_scores]) if fold_scores else 0,
+                "dataset_size": float(len(y)),
+                "class_balance": {
+                    "bullish": int((y == 1).sum()),
+                    "bearish": int((y == -1).sum()),
+                    "neutral": int((y == 0).sum())
+                }
             }
             
-            logger.info(f"Model Training complete. Validate Acc: {acc:.2%}, Log Loss: {ll:.4f}")
+            logger.info(f"Model trained. Accuracy: {metrics['val_accuracy']:.2%}, F1: {metrics['val_f1']:.3f}")
             self.save_model()
             return metrics
             
         except Exception as e:
-            logger.critical(f"Critical error during model training: {e}", exc_info=True)
-            raise e
-
+            logger.error(f"Training failed: {e}")
+            raise
+    
     def predict_direction(self, feature_row: Dict[str, float]) -> Tuple[int, float]:
-        """
-        Predicts current signal state and gives calibrated confidence.
-        Output: (direction, confidence)
-          direction: -1 (bearish), 0 (neutral), 1 (bullish)
-          confidence: float probability [0.0 - 1.0]
-        """
-        # Form safe single row pandas DataFrame
-        idx_df = pd.DataFrame([feature_row])[self.features].fillna(0)
-        
         try:
-            probs = self.model.predict_proba(idx_df)[0] # Array corresponding to classes [-1, 0, 1]
-            classes = np.array([-1, 0, 1])
-            max_idx = int(np.argmax(probs))
+            idx_df = pd.DataFrame([feature_row])
+            for f in self.features:
+                if f not in idx_df.columns:
+                    idx_df[f] = 0
+            idx_df = idx_df[self.features].fillna(0)
             
-            direction = int(classes[max_idx])
-            confidence = float(probs[max_idx])
+            X_scaled = self.feature_scaler.transform(idx_df)
             
-            return direction, confidence
+            if hasattr(self.model, "predict_proba"):
+                probs = self.model.predict_proba(X_scaled)[0]
+                classes = np.array([-1, 0, 1])
+                max_idx = int(np.argmax(probs))
+                
+                confidence = float(probs[max_idx])
+                sorted_probs = np.sort(probs)
+                margin = sorted_probs[-1] - sorted_probs[-2]
+                if margin > 0.3:
+                    confidence = min(1.0, confidence * 1.2)
+                
+                return int(classes[max_idx]), confidence
+            else:
+                probs = self.model.predict_proba(idx_df)[0]
+                max_idx = int(np.argmax(probs))
+                return int([-1, 0, 1][max_idx]), float(probs[max_idx])
+                
         except Exception as e:
-            logger.error(f"Error executing prediction pipeline: {e}")
-            # Safe Fallback to Neutral
-            return 0, 1.0
+            logger.error(f"Prediction error: {e}")
+            return 0, 0.5

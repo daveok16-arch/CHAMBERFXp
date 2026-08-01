@@ -1,3 +1,5 @@
+import { MarketRegime, SignalQuality } from "../types";
+
 export interface AssetRRProfile {
   assetClass: "GOLD" | "BITCOIN" | "ALTCOIN" | "FOREX_MAJOR" | "JPY_PAIR" | "CROSS";
   rrRatio: number;
@@ -11,11 +13,28 @@ export interface AssetRRProfile {
   tooltip: string;
 }
 
+export interface KellyPosition {
+  kellyFraction: number;
+  optimalFraction: number;
+  riskAmount: number;
+  positionSize: number;
+  recommendedRisk: number;
+}
+
+export interface DynamicSLTP {
+  stopLoss: number;
+  takeProfit: number;
+  trailingStop: number;
+  riskReward: number;
+  atrMultiplier: number;
+  regime: "TRENDING" | "RANGING" | "VOLATILE";
+}
+
 export function getAssetRRProfile(symbol: string, date: Date = new Date()): AssetRRProfile {
   const cleanSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
   const hour = date.getUTCHours();
 
-  // 1. GOLD (XAUUSD)
+  // GOLD (XAUUSD)
   if (cleanSym.includes("XAU") || cleanSym.includes("GOLD")) {
     let sessionName = "London Session";
     let rrRatio = 2.5;
@@ -37,10 +56,6 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
       sessionName = "NY Session";
       rrRatio = 2.5;
       tooltip = "Gold NY Session — High volatility profile";
-    } else {
-      sessionName = "London Session";
-      rrRatio = 2.5;
-      tooltip = "Gold London Session — High volatility profile";
     }
 
     return {
@@ -57,7 +72,7 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     };
   }
 
-  // 2. BITCOIN (BTCUSD)
+  // BITCOIN (BTCUSD)
   if (cleanSym.includes("BTC")) {
     return {
       assetClass: "BITCOIN",
@@ -73,7 +88,7 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     };
   }
 
-  // 3. ETHEREUM / SOLANA (ETHUSD, SOLUSD)
+  // ETHEREUM / SOLANA
   if (cleanSym.includes("ETH")) {
     return {
       assetClass: "ALTCOIN",
@@ -104,7 +119,7 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     };
   }
 
-  // 4. JPY PAIRS (USDJPY, EURJPY, GBPJPY, AUDJPY, CADJPY, CHFJPY)
+  // JPY PAIRS
   if (cleanSym.includes("JPY")) {
     let fxSession = "London Session";
     if (hour >= 0 && hour < 8) fxSession = "Asian Session";
@@ -130,7 +145,7 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     };
   }
 
-  // 5. FOREX MAJORS
+  // FOREX MAJORS
   const majors = ["EURUSD", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"];
   if (majors.includes(cleanSym)) {
     let fxSession = "London Session";
@@ -151,7 +166,7 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     };
   }
 
-  // 6. CROSSES / DEFAULT
+  // CROSSES / DEFAULT
   let fxSession = "London Session";
   if (hour >= 0 && hour < 8) fxSession = "Asian Session";
   else if (hour >= 16 && hour < 24) fxSession = "NY Session";
@@ -167,5 +182,182 @@ export function getAssetRRProfile(symbol: string, date: Date = new Date()): Asse
     profileSummary: `${cleanSym} / ${fxSession} / 1:1.5`,
     badgeStyle: "forex",
     tooltip: `${cleanSym} ${fxSession} — Cross pair structure profile`
+  };
+}
+
+// NEW: Kelly Criterion Position Sizing
+export function calculateKellyPosition(
+  winRate: number,
+  avgWin: number,
+  avgLoss: number,
+  accountBalance: number,
+  kellyFraction: number = 0.25
+): KellyPosition {
+  // Kelly formula: f* = (bp - q) / b
+  // where b = avgWin/avgLoss, p = winRate, q = 1 - p
+  const b = avgWin / Math.abs(avgLoss);
+  const p = winRate;
+  const q = 1 - p;
+  
+  const kellyFull = (b * p - q) / b;
+  const kellyOptimal = Math.max(0, kellyFull) * kellyFraction;
+  
+  // Position size = account * kelly fraction
+  const positionSize = accountBalance * kellyOptimal;
+  
+  // Risk amount (1% default)
+  const riskAmount = accountBalance * 0.01;
+  
+  return {
+    kellyFraction: kellyOptimal,
+    optimalFraction: kellyFull,
+    riskAmount,
+    positionSize,
+    recommendedRisk: 0.01 // 1% of account
+  };
+}
+
+// NEW: Dynamic Stop Loss / Take Profit based on regime
+export function calculateDynamicSLTP(
+  entryPrice: number,
+  atr: number,
+  regime: "TRENDING" | "RANGING" | "VOLATILE",
+  direction: "BUY" | "SELL",
+  baseRR: number = 2.0
+): DynamicSLTP {
+  let atrMultiplier: number;
+  
+  switch (regime) {
+    case "TRENDING":
+      // Wider stops, wider targets in trending markets
+      atrMultiplier = 1.5;
+      break;
+    case "VOLATILE":
+      // Very wide stops in volatile markets
+      atrMultiplier = 2.5;
+      break;
+    case "RANGING":
+    default:
+      // Tight stops in ranging markets
+      atrMultiplier = 1.0;
+      break;
+  }
+  
+  const slDistance = atr * atrMultiplier;
+  const tpDistance = slDistance * baseRR;
+  
+  let stopLoss: number;
+  let takeProfit: number;
+  
+  if (direction === "BUY") {
+    stopLoss = entryPrice - slDistance;
+    takeProfit = entryPrice + tpDistance;
+  } else {
+    stopLoss = entryPrice + slDistance;
+    takeProfit = entryPrice - tpDistance;
+  }
+  
+  // Trailing stop activates after 1.5R profit
+  const trailingActivation = tpDistance * 1.5;
+  const trailingStop = direction === "BUY" 
+    ? entryPrice + trailingActivation - atr * 1.0
+    : entryPrice - trailingActivation + atr * 1.0;
+  
+  return {
+    stopLoss,
+    takeProfit,
+    trailingStop,
+    riskReward: baseRR,
+    atrMultiplier,
+    regime
+  };
+}
+
+// NEW: Detect market regime from indicators
+export function detectRegimeFromIndicators(
+  adx: number,
+  atrPct: number,
+  bbWidth: number
+): MarketRegime {
+  // High volatility
+  if (atrPct > 2.5 || bbWidth > 0.1) {
+    return {
+      type: "VOLATILE",
+      adx,
+      atr: atrPct,
+      plus_di: 0,
+      minus_di: 0,
+      description: "High volatility detected — extra confirmation required"
+    };
+  }
+  
+  // Strong trend
+  if (adx > 25) {
+    return {
+      type: "TRENDING",
+      adx,
+      atr: atrPct,
+      plus_di: 0,
+      minus_di: 0,
+      description: "Trending market — momentum strategies favored"
+    };
+  }
+  
+  // Ranging
+  return {
+    type: "RANGING",
+    adx,
+    atr: atrPct,
+    plus_di: 0,
+    minus_di: 0,
+    description: "Ranging market — mean reversion at extremes"
+  };
+}
+
+// NEW: Calculate composite signal score
+export function calculateSignalScore(
+  mlConfidence: number,
+  rsi: number,
+  trendStrength: number,
+  mtfAlignment: number,
+  volumeRatio: number,
+  adx: number,
+  direction: 1 | -1
+): SignalQuality {
+  let score = 0;
+  
+  // ML Confidence (40%)
+  score += mlConfidence * 0.40;
+  
+  // RSI alignment (15%)
+  let rsiScore = 0;
+  if (direction === 1 && rsi < 40) rsiScore = 1;
+  if (direction === -1 && rsi > 60) rsiScore = 1;
+  if (direction === 1 && rsi < 30) rsiScore = 1.5;
+  if (direction === -1 && rsi > 70) rsiScore = 1.5;
+  score += Math.min(1, rsiScore) * 0.15;
+  
+  // Trend strength (15%)
+  const trendAligned = (direction === 1 && trendStrength > 0) || (direction === -1 && trendStrength < 0);
+  score += (trendAligned ? 1 : 0) * Math.min(1, Math.abs(trendStrength)) * 0.15;
+  
+  // MTF alignment (15%)
+  score += Math.abs(mtfAlignment) * 0.15;
+  
+  // Volume confirmation (10%)
+  const volumeConfirmed = volumeRatio > 1.2;
+  score += (volumeConfirmed ? 1 : 0.5) * 0.10;
+  
+  // ADX confirmation (5%)
+  score += (adx > 25 ? 1 : adx > 20 ? 0.5 : 0) * 0.05;
+  
+  return {
+    compositeScore: Math.min(100, Math.round(score * 100)),
+    mlConfidence,
+    rsiAlignment: rsiScore,
+    trendStrength,
+    mtfAlignment,
+    volumeConfirmation: volumeRatio,
+    adxConfirmation: adx
   };
 }

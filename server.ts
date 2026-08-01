@@ -672,7 +672,7 @@ async function getAssetTechnicalScan(symbol: string): Promise<any> {
 
     // Calculate base raw confidence: if RSI is 40-60 (neutral) and EMA+MACD align, 0 RSI penalty is applied
     let rawConf = 50;
-    if (lastRsi15m >= 40 && lastRsi15m <= 60 && (macdStatus === maStatus && macdStatus !== "NEUTRAL")) {
+    if (lastRsi15m >= 40 && lastRsi15m <= 60 && (macdStatus === maStatus)) {
       rawConf = Math.round(normMacd * 0.50 + normEma * 0.50);
     } else {
       rawConf = Math.round(rsiScore * 0.30 + normMacd * 0.35 + normEma * 0.35);

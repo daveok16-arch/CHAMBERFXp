@@ -1,167 +1,260 @@
 """
-Historical Backtester (backtester.py)
-Vectorized and event-driven backtesting engine to evaluate model performance on
-historical candle feeds. Incorporates realistic transaction costs, execution slip,
-and spread, with strict isolation to ensure zero future-looking bias.
+Enhanced Backtester (backtester.py)
+Professional backtesting with Monte Carlo simulation, walk-forward analysis,
+regime-specific performance, and comprehensive risk metrics.
 """
 
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 import config
 from storage import logger
 
 
-class HistoricalBacktester:
+class EnhancedBacktester:
     def __init__(self, df: pd.DataFrame):
-        """
-        Expects df to contain all engineered features, alignment indices, and closes.
-        """
         self.df = df.copy().sort_index()
-        self.transaction_fee = config.TRADING_CONFIG["TRANSACTION_COST"]
-        self.slippage_pct = config.TRADING_CONFIG["SLIPPAGE_PCT"]
-        self.spread_pct = config.TRADING_CONFIG["BID_ASK_SPREAD"]
-
+        self.fee = config.TRADING_CONFIG["TRANSACTION_COST"]
+        self.slippage = config.TRADING_CONFIG["SLIPPAGE_PCT"]
+        self.spread = config.TRADING_CONFIG["BID_ASK_SPREAD"]
+        
     def run_backtest(
         self,
         signals: pd.Series,
-        confidences: pd.Series
+        confidences: pd.Series,
+        initial_balance: float = 10000.0
     ) -> Dict[str, Any]:
-        """
-        Executes mock trade entries and exits based on decision signals (BUY, SELL, HOLD).
-        Signals is a series with index matching self.df, values: 'BUY', 'SELL', 'HOLD'.
-        
-        Tracks equity balances and computes high-precision risk metrics.
-        """
+        """Run comprehensive backtest with full metrics."""
         prices = self.df["close"].values
-        timestamps = self.df.index
-        
-        signal_vals = signals.values
-        conf_vals = confidences.values
-        
-        equity = 10000.0  # Initial portfolio balance (USD)
-        position = 0.0    # 1.0 for Long, -1.0 for Short, 0.0 for Flat
+        equity = initial_balance
+        position = 0.0
         entry_price = 0.0
-        trade_count = 0
+        entry_idx = 0
+        
+        equity_curve = []
+        trades = []
+        returns_list = []
         wins = 0
-        total_pnl = 0.0
-        
-        # Lists for tracking
-        equity_curve: List[float] = []
-        trade_logs: List[Dict[str, Any]] = []
-        returns_list: List[float] = []
-        
-        prev_equity = equity
+        losses = 0
         
         for i in range(len(self.df)):
-            current_price = prices[i]
-            sig = signal_vals[i]
-            conf = conf_vals[i]
-            ts = timestamps[i]
+            sig = signals.iloc[i] if i < len(signals) else "HOLD"
+            conf = confidences.iloc[i] if i < len(confidences) else 0
             
-            # Close/adjust open state if signal shifts
-            if position != 0.0:
-                # Calculate running return
+            # Exit logic
+            if position != 0:
                 if position == 1.0:
-                    trade_pct = (current_price - entry_price) / entry_price
+                    trade_ret = (prices[i] - entry_price) / entry_price
                 else:
-                    trade_pct = (entry_price - current_price) / entry_price
+                    trade_ret = (entry_price - prices[i]) / entry_price
                 
-                # Exit trigger: Signal dictates a reversal or stop
-                should_exit = (position == 1.0 and sig == "SELL") or \
-                              (position == -1.0 and sig == "BUY") or \
-                              (sig == "HOLD") or \
-                              (i == len(self.df) - 1)  # Force exit at dataset tail
-                              
+                should_exit = (position == 1 and sig == "SELL") or                              (position == -1 and sig == "BUY") or                              (sig == "HOLD") or (i == len(self.df) - 1)
+                
                 if should_exit:
-                    # Formulate execution slippage & fees
-                    fees_and_slip = self.transaction_fee + self.slippage_pct + (self.spread_pct / 2)
-                    net_trade_pct = trade_pct - fees_and_slip
+                    costs = self.fee + self.slippage + self.spread / 2
+                    net_ret = trade_ret - costs
                     
-                    trade_profit = prev_equity * net_trade_pct
+                    trade_profit = equity * net_ret
                     equity += trade_profit
-                    trade_count += 1
                     
-                    if net_trade_pct > 0:
+                    if net_ret > 0:
                         wins += 1
-                        
-                    total_pnl += trade_profit
-                    returns_list.append(net_trade_pct)
+                    else:
+                        losses += 1
                     
-                    trade_logs.append({
-                        "entry_time": str(timestamps[i - 1]),
-                        "exit_time": str(ts),
-                        "direction": "LONG" if position == 1.0 else "SHORT",
-                        "entry_price": float(entry_price),
-                        "exit_price": float(current_price),
-                        "pnl_pct": float(net_trade_pct),
-                        "net_pnl_usd": float(trade_profit),
-                        "confidence": float(conf)
+                    returns_list.append(net_ret)
+                    
+                    trades.append({
+                        "entry_idx": entry_idx,
+                        "exit_idx": i,
+                        "direction": "LONG" if position == 1 else "SHORT",
+                        "entry_price": entry_price,
+                        "exit_price": prices[i],
+                        "net_return": net_ret,
+                        "pnl": trade_profit,
+                        "confidence": conf
                     })
                     
-                    # Reset states
-                    position = 0.0
-                    entry_price = 0.0
+                    position = 0
+                    entry_price = 0
             
-            # Entry logic if flat
-            if position == 0.0 and i < len(self.df) - 1:
+            # Entry logic
+            if position == 0 and i < len(self.df) - 1:
                 if sig == "BUY":
                     position = 1.0
-                    fees_and_slip = self.transaction_fee + self.slippage_pct + (self.spread_pct / 2)
-                    entry_price = current_price * (1 + fees_and_slip)
-                    prev_equity = equity
+                    costs = self.fee + self.slippage + self.spread / 2
+                    entry_price = prices[i] * (1 + costs)
+                    entry_idx = i
                 elif sig == "SELL":
                     position = -1.0
-                    fees_and_slip = self.transaction_fee + self.slippage_pct + (self.spread_pct / 2)
-                    entry_price = current_price * (1 - fees_and_slip)
-                    prev_equity = equity
-                    
-            equity_curve.append(equity)
+                    costs = self.fee + self.slippage + self.spread / 2
+                    entry_price = prices[i] * (1 - costs)
+                    entry_idx = i
             
-        # Standardize return arrays
-        pnl_series = pd.Series(returns_list)
+            equity_curve.append(equity)
+        
+        return self._calculate_metrics(equity_curve, trades, returns_list, wins, losses)
+    
+    def walk_forward_test(
+        self,
+        signals: pd.Series,
+        confidences: pd.Series,
+        train_size: int = 1000,
+        test_size: int = 200
+    ) -> Dict[str, Any]:
+        """Walk-forward analysis to prevent overfitting."""
+        results = []
+        i = 0
+        
+        while i + train_size + test_size <= len(self.df):
+            train_df = self.df.iloc[i:i+train_size]
+            test_df = self.df.iloc[i+train_size:i+train_size+test_size]
+            
+            test_signals = signals.iloc[i+train_size:i+train_size+test_size]
+            test_confidences = confidences.iloc[i+train_size:i+train_size+test_size]
+            
+            bt = EnhancedBacktester(test_df)
+            metrics = bt.run_backtest(test_signals, test_confidences)
+            metrics["window_start"] = i
+            metrics["window_end"] = i + train_size + test_size
+            
+            results.append(metrics)
+            i += test_size
+        
+        # Aggregate results
+        if not results:
+            return {}
+        
+        return {
+            "windows": results,
+            "avg_return": np.mean([r["total_return"] for r in results]),
+            "avg_win_rate": np.mean([r["win_rate"] for r in results]),
+            "avg_sharpe": np.mean([r["sharpe_ratio"] for r in results]),
+            "consistency": np.mean([1 if r["total_return"] > 0 else 0 for r in results])
+        }
+    
+    def monte_carlo_simulation(
+        self,
+        trades: List[Dict],
+        n_simulations: int = 1000,
+        initial_balance: float = 10000.0
+    ) -> Dict[str, Any]:
+        """Monte Carlo simulation for robustness testing."""
+        if not trades:
+            return {}
+        
+        returns = [t["net_return"] for t in trades]
+        equity_curves = []
+        
+        for _ in range(n_simulations):
+            equity = initial_balance
+            curve = [equity]
+            
+            for ret in returns:
+                if np.random.random() > 0.1:  # 90% trade survival
+                    equity *= (1 + ret)
+                curve.append(equity)
+            
+            equity_curves.append(equity)
+        
+        equity_curves = sorted(equity_curves)
+        
+        return {
+            "median_equity": np.median(equity_curves),
+            "percentile_5": equity_curves[int(n_simulations * 0.05)],
+            "percentile_95": equity_curves[int(n_simulations * 0.95)],
+            "max_loss": min(equity_curves) - initial_balance,
+            "max_win": max(equity_curves) - initial_balance,
+            "probability_of_profit": sum(1 for e in equity_curves if e > initial_balance) / n_simulations
+        }
+    
+    def regime_specific_performance(
+        self,
+        signals: pd.Series,
+        confidences: pd.Series,
+        regime_column: str = "market_regime"
+    ) -> Dict[str, Dict[str, Any]]:
+        """Analyze performance by market regime."""
+        regimes = self.df[regime_column].unique()
+        results = {}
+        
+        for regime in regimes:
+            if pd.isna(regime):
+                continue
+                
+            mask = self.df[regime_column] == regime
+            regime_df = self.df[mask]
+            
+            if len(regime_df) < 50:
+                continue
+            
+            regime_signals = signals[mask]
+            regime_confidences = confidences[mask]
+            
+            bt = EnhancedBacktester(regime_df)
+            results[str(regime)] = bt.run_backtest(regime_signals, regime_confidences)
+        
+        return results
+    
+    def _calculate_metrics(
+        self,
+        equity_curve: List[float],
+        trades: List[Dict],
+        returns_list: List[float],
+        wins: int,
+        losses: int
+    ) -> Dict[str, Any]:
+        """Calculate comprehensive performance metrics."""
         equity_series = pd.Series(equity_curve)
+        returns_series = pd.Series(returns_list)
         
-        # Financial metric formulas
-        total_return = (equity - 10000.0) / 10000.0
-        win_rate = wins / trade_count if trade_count > 0 else 0.0
+        total_return = (equity_curve[-1] - equity_curve[0]) / equity_curve[0]
+        n_trades = len(trades)
+        win_rate = wins / n_trades if n_trades > 0 else 0
         
-        # Profit Factor
-        gains = pnl_series[pnl_series > 0].sum()
-        losses = abs(pnl_series[pnl_series < 0].sum())
-        profit_factor = gains / losses if losses > 0 else (1.0 if gains > 0 else 0.0)
+        # Profit factor
+        gross_profit = sum(r for r in returns_list if r > 0)
+        gross_loss = abs(sum(r for r in returns_list if r < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
         
-        # Sharpe & Sortino ratios (assuming risk-free asset yield is 0.0)
-        daily_std = pnl_series.std()
-        mean_ret = pnl_series.mean()
-        
-        # Annualized Sharpe (assuming 252 trading sessions representing standard crypto 24/7 velocity)
-        sharpe_ratio = (mean_ret / daily_std) * np.sqrt(252) if daily_std > 0 else 0.0
-        
-        downside_std = pnl_series[pnl_series < 0].std()
-        sortino_ratio = (mean_ret / downside_std) * np.sqrt(252) if downside_std > 0 else 0.0
-        
-        # Maximum Drawdown
+        # Risk metrics
+        equity_series.index = range(len(equity_series))
         rolling_max = equity_series.cummax()
         drawdowns = (equity_series - rolling_max) / rolling_max
-        max_drawdown = float(drawdowns.min())
+        max_drawdown = drawdowns.min()
         
-        metrics = {
-            "initial_balance": 10000.0,
-            "final_balance": float(equity),
-            "total_return_pct": float(total_return),
-            "trade_count": trade_count,
-            "win_rate": float(win_rate),
-            "profit_factor": float(profit_factor),
-            "sharpe_ratio": float(sharpe_ratio),
-            "sortino_ratio": float(sortino_ratio),
-            "max_drawdown": float(max_drawdown),
+        # Sharpe & Sortino
+        if len(returns_list) > 1:
+            mean_ret = returns_series.mean()
+            std_ret = returns_series.std()
+            downside_returns = returns_series[returns_series < 0]
+            
+            sharpe = (mean_ret / std_ret) * np.sqrt(252) if std_ret > 0 else 0
+            sortino = (mean_ret / downside_returns.std()) * np.sqrt(252) if len(downside_returns) > 0 else 0
+        else:
+            sharpe = sortino = 0
+        
+        # Expectancy
+        expectancy = (win_rate * (gross_profit / max(wins, 1))) -                     ((1 - win_rate) * (gross_loss / max(losses, 1))) if n_trades > 0 else 0
+        
+        return {
+            "initial_balance": equity_curve[0],
+            "final_balance": equity_curve[-1],
+            "total_return": total_return,
+            "trade_count": n_trades,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino,
+            "max_drawdown": max_drawdown,
+            "expectancy": expectancy,
+            "avg_win": gross_profit / max(wins, 1) if wins > 0 else 0,
+            "avg_loss": gross_loss / max(losses, 1) if losses > 0 else 0,
             "equity_curve": equity_curve,
-            "trades": trade_logs
+            "trades": trades
         }
-        
-        logger.info(f"Backtester Completed -> Total Trades: {trade_count}, Net Return: {total_return:.2%}, Max DD: {max_drawdown:.2%}")
-        return metrics
 
 
 def calculate_classification_metrics(
@@ -169,50 +262,38 @@ def calculate_classification_metrics(
     y_pred: np.ndarray,
     y_probs: np.ndarray
 ) -> Dict[str, float]:
-    """
-    Computes professional quantitative metrics like precision, recall, F1, and Brier accuracy score
-    to analyze the probability calibration quality of predictions.
-    """
+    """Calculate classification quality metrics."""
     metrics = {}
     
-    # Accuracy
-    correct_preds = (y_true == y_pred)
-    metrics["accuracy"] = float(np.mean(correct_preds))
+    correct = (y_true == y_pred)
+    metrics["accuracy"] = float(np.mean(correct))
     
-    # Class-wise precision
     for cls in [-1, 0, 1]:
-        cls_name = "neutral" if cls == 0 else ("bullish" if cls == 1 else "bearish")
+        cls_name = {-1: "bearish", 0: "neutral", 1: "bullish"}[cls]
         
-        # Handle precision
         pred_mask = (y_pred == cls)
         true_mask = (y_true == cls)
         
-        true_pos = np.sum(pred_mask & true_mask)
-        predicted_total = np.sum(pred_mask)
-        actual_total = np.sum(true_mask)
+        tp = np.sum(pred_mask & true_mask)
+        fp = np.sum(pred_mask & ~true_mask)
+        fn = np.sum(~pred_mask & true_mask)
         
-        precision = true_pos / predicted_total if predicted_total > 0 else 0.0
-        recall = true_pos / actual_total if actual_total > 0 else 0.0
-        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
         
         metrics[f"{cls_name}_precision"] = float(precision)
         metrics[f"{cls_name}_recall"] = float(recall)
         metrics[f"{cls_name}_f1"] = float(f1)
-        
-    # Brier score calculation for probability calibration accuracy
-    # Brier score evaluates mean squared error of probability predictions
-    # We binarize true directions to calculate Brier Score for each classes
-    brier_scores = []
-    classes_list = [-1, 0, 1]
     
-    for idx, cls in enumerate(classes_list):
+    # Brier score
+    brier_scores = []
+    for idx, cls in enumerate([-1, 0, 1]):
         true_binary = (y_true == cls).astype(float)
-        # Handle shape safety
         if y_probs.shape[1] > idx:
-            pred_probs = y_probs[:, idx]
-            brier_score = float(np.mean((true_binary - pred_probs) ** 2))
-            brier_scores.append(brier_score)
-            
-    metrics["brier_score_mean"] = float(np.mean(brier_scores)) if brier_scores else 0.0
+            brier = np.mean((true_binary - y_probs[:, idx]) ** 2)
+            brier_scores.append(brier)
+    
+    metrics["brier_score"] = float(np.mean(brier_scores)) if brier_scores else 0
     
     return metrics

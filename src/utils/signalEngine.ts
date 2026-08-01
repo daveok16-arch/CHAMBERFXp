@@ -1,17 +1,17 @@
 import { AuditedSignalItem } from "../types";
+import { getAssetRRProfile } from "./rrFramework";
 
 export interface PairStateInfo {
   symbol: string;
   state: "IDLE" | "ACTIVE" | "COOLDOWN" | "LOCKED";
   activeSignalId?: string;
-  cooldownUntil?: number; // ms timestamp
-  lockUntil?: number; // ms timestamp
+  cooldownUntil?: number;
+  lockUntil?: number;
   consecutiveLosses: number;
   hourlyTimestamps: number[];
   reason?: string;
 }
 
-// Global in-memory state tracking for pairs
 const pairStateMap: Record<string, PairStateInfo> = {};
 
 export function getPairState(symbol: string): PairStateInfo {
@@ -27,7 +27,6 @@ export function getPairState(symbol: string): PairStateInfo {
   const info = pairStateMap[symbol];
   const now = Date.now();
 
-  // Check Lock
   if (info.lockUntil && info.lockUntil > now) {
     info.state = "LOCKED";
     info.reason = `Auto-locked until ${new Date(info.lockUntil).toLocaleTimeString()} (Spam prevention)`;
@@ -36,7 +35,6 @@ export function getPairState(symbol: string): PairStateInfo {
     info.lockUntil = undefined;
   }
 
-  // Check Cooldown
   if (info.cooldownUntil && info.cooldownUntil > now) {
     info.state = "COOLDOWN";
     const remMins = Math.ceil((info.cooldownUntil - now) / 60000);
@@ -61,12 +59,12 @@ export function updatePairOnSignalClosed(symbol: string, result: "HIT TP" | "HIT
 
   if (result === "HIT TP") {
     info.consecutiveLosses = 0;
-    info.cooldownUntil = now + 3600000; // 1 hour win cooldown
+    info.cooldownUntil = now + 3600000;
     info.state = "COOLDOWN";
     info.reason = "Cooling down 1h after WIN";
   } else if (result === "HIT SL") {
     info.consecutiveLosses = (info.consecutiveLosses || 0) + 1;
-    info.cooldownUntil = now + 7200000; // 2 hour loss cooldown
+    info.cooldownUntil = now + 7200000;
     info.state = "COOLDOWN";
     info.reason = `Cooling down 2h after LOSS (${info.consecutiveLosses} consecutive loss)`;
   }
@@ -88,13 +86,11 @@ export function canGenerateNewSignal(symbol: string): { allowed: boolean; reason
     return { allowed: false, reason: info.reason || "Pair is in post-trade cooldown period" };
   }
 
-  // Check hourly rate limit (>2 signals per hour)
   const recentTimestamps = info.hourlyTimestamps.filter((t) => now - t < 3600000);
   info.hourlyTimestamps = recentTimestamps;
 
   if (recentTimestamps.length >= 2) {
-    // Auto-lock for 4 hours
-    info.lockUntil = now + 14400000; // 4 hours
+    info.lockUntil = now + 14400000;
     info.state = "LOCKED";
     info.reason = "Spam frequency threshold exceeded (>2/hr). Auto-locked 4 hours.";
     return { allowed: false, reason: info.reason };
@@ -126,7 +122,6 @@ export function getSignalAgeString(fireTimestamp?: string): string {
   return `${days}d ago`;
 }
 
-// Capped & Sanitized Pips/Points Calculator
 export function calculateSanitizedPipsOrPoints(
   symbol: string,
   entryPrice: number,
@@ -143,14 +138,11 @@ export function calculateSanitizedPipsOrPoints(
   let pipsOrPoints = 0;
   if (isCryptoOrGold) {
     pipsOrPoints = priceDiff;
-    // Cap crypto / gold points at +/-5000.0 max
     if (pipsOrPoints < -5000) pipsOrPoints = -5000;
     if (pipsOrPoints > 5000) pipsOrPoints = 5000;
   } else {
-    // Forex
     const multiplier = isJpy ? 100 : 10000;
     pipsOrPoints = priceDiff * multiplier;
-    // Cap forex pips at +/-500.0 max
     if (pipsOrPoints < -500) pipsOrPoints = -500;
     if (pipsOrPoints > 500) pipsOrPoints = 500;
   }
@@ -166,7 +158,6 @@ export function deduplicateSignals(signals: AuditedSignalItem[]): AuditedSignalI
   const result: AuditedSignalItem[] = [];
 
   for (const sig of signals) {
-    // Unique key by id or symbol+minute timestamp
     const minuteKey = `${sig.symbol}-${sig.direction}-${sig.fireTimestamp.substring(0, 16)}`;
     if (seen.has(sig.id) || seen.has(minuteKey)) {
       continue;
@@ -177,4 +168,70 @@ export function deduplicateSignals(signals: AuditedSignalItem[]): AuditedSignalI
   }
 
   return result;
+}
+
+// NEW: Generate signal with enhanced data
+export function generateEnhancedSignal(
+  symbol: string,
+  direction: "BUY" | "SELL",
+  entryPrice: number,
+  confidence: number,
+  marketRegime: "TRENDING" | "RANGING" | "VOLATILE",
+  features?: {
+    atr?: number;
+    rsi?: number;
+    adx?: number;
+  }
+): Omit<AuditedSignalItem, "id"> {
+  const rrProfile = getAssetRRProfile(symbol);
+  const rrRatio = rrProfile.rrRatio;
+  
+  const isCrypto = symbol.includes("BTC") || symbol.includes("ETH") || symbol.includes("SOL");
+  const isGold = symbol.includes("XAU");
+  
+  // Calculate TP and SL based on ATR or price
+  let tpDistance: number;
+  let slDistance: number;
+  
+  if (features?.atr && features.atr > 0) {
+    const atrMult = marketRegime === "TRENDING" ? 1.5 : marketRegime === "VOLATILE" ? 2.5 : 1.0;
+    tpDistance = features.atr * atrMult * rrRatio;
+    slDistance = features.atr * atrMult;
+  } else {
+    // Fallback to percentage
+    tpDistance = entryPrice * 0.01 * rrRatio;
+    slDistance = entryPrice * 0.01;
+  }
+  
+  const tpPrice = direction === "BUY" ? entryPrice + tpDistance : entryPrice - tpDistance;
+  const slPrice = direction === "BUY" ? entryPrice - slDistance : entryPrice + slDistance;
+  
+  // Calculate signal score (mock for now)
+  const signalScore = Math.min(100, Math.round(confidence * 100));
+  
+  // Risk reward achieved (actual R:R)
+  const actualRisk = Math.abs(entryPrice - slPrice);
+  const actualReward = Math.abs(tpPrice - entryPrice);
+  const riskReward = actualReward / actualRisk;
+  
+  return {
+    timestamp: new Date().toISOString(),
+    month: new Date().toISOString().substring(0, 7),
+    symbol,
+    direction,
+    entryPrice,
+    tpPrice,
+    slPrice,
+    result: "ACTIVE",
+    pipsOrPoints: 0,
+    pnlPct: 0,
+    rrAchieved: riskReward,
+    priceAtFire: entryPrice,
+    fireTimestamp: new Date().toISOString(),
+    confidence,
+    reason: `${marketRegime} setup | Score: ${signalScore}/100`,
+    signalScore,
+    marketRegime,
+    riskReward: rrRatio
+  };
 }

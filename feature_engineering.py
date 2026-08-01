@@ -99,7 +99,7 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     ], axis=1).max(axis=1)
     
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
-    return atr.fillna(method="bfill")
+    return atr.ffill().bfill()
 
 
 def compute_vwap(df: pd.DataFrame) -> pd.Series:
