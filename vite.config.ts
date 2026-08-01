@@ -4,6 +4,12 @@ import path from 'path';
 import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
+  // Default allowed hosts for deployment
+  const defaultHosts = ['chamberfxp.onrender.com'];
+  
+  // Allow additional hosts from environment variable
+  const additionalHosts = process.env.ALLOWED_HOSTS?.split(',').filter(Boolean) || [];
+  
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
@@ -12,11 +18,8 @@ export default defineConfig(() => {
       },
     },
     server: {
-      allowedHosts: process.env.ALLOWED_HOSTS?.split(',') || [],
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      allowedHosts: [...defaultHosts, ...additionalHosts],
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
