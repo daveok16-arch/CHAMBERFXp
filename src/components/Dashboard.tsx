@@ -484,12 +484,18 @@ ${utcFormatted}`;
                     recommendation: matched.recommendation || item.recommendation,
                     confidence: matched.confidence || item.confidence,
                     rsi: matched.rsi || item.rsi,
+                    rsi15m: matched.rsi15m || matched.rsi || item.rsi15m,
+                    rsi1h: matched.rsi1h || item.rsi1h,
+                    rsi1d: matched.rsi1d || item.rsi1d,
                     atr: matched.atr || item.atr,
                     barsCount: matched.barsCount || item.barsCount,
                     macd: matched.macd || item.macd,
                     ema20: matched.ema20 || item.ema20,
                     ema50: matched.ema50 || item.ema50,
                     targets: matched.targets !== undefined ? matched.targets : item.targets,
+                    marketStatus: matched.marketStatus || item.marketStatus,
+                    indicatorsScan: matched.indicatorsScan || item.indicatorsScan,
+                    keyLevelsCalc: matched.keyLevelsCalc || item.keyLevelsCalc,
                     dataSource: matched.dataSource || item.dataSource,
                     isStale: matched.isStale !== undefined ? matched.isStale : item.isStale,
                     staleReason: matched.staleReason || item.staleReason,
@@ -1332,6 +1338,7 @@ ${utcFormatted}`;
                   {/* EXPANDABLE DEEP ANALYSIS DRAWER */}
                   {isExpanded && (
                     <div className="pt-3 border-t border-slate-700/80 font-mono text-xs text-slate-200 space-y-2.5 animate-fade-in bg-[#0F172A] p-3.5 rounded-lg border border-slate-700/80">
+                      {/* Indicators Row */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-slate-200">
                         <div className="bg-[#1E293B] p-2.5 rounded border border-slate-700/70">
                           <span className="text-slate-400 block text-[10px] uppercase font-medium">ATR</span>
@@ -1356,6 +1363,38 @@ ${utcFormatted}`;
                           </span>
                         </div>
                       </div>
+
+                      {/* Indicator Counts */}
+                      {item.indicatorsScan && (
+                        <div className="flex items-center gap-3 pt-2 border-t border-slate-800">
+                          <span className="text-[10px] uppercase text-slate-500">Signals:</span>
+                          <span className="flex items-center gap-1">
+                            <span className="text-emerald-400 font-bold">{item.indicatorsScan.bullishIndicators || 0}</span>
+                            <span className="text-slate-500">bullish</span>
+                          </span>
+                          <span className="text-slate-600">|</span>
+                          <span className="flex items-center gap-1">
+                            <span className="text-rose-400 font-bold">{item.indicatorsScan.bearishIndicators || 0}</span>
+                            <span className="text-slate-500">bearish</span>
+                          </span>
+                          {item.indicatorsScan.rsiStatus && (
+                            <>
+                              <span className="text-slate-600">|</span>
+                              <span className={`text-[10px] font-medium ${item.indicatorsScan.rsiStatus.includes('OVERBOUGHT') ? 'text-rose-400' : item.indicatorsScan.rsiStatus.includes('OVERSOLD') ? 'text-emerald-400' : 'text-slate-400'}`}>
+                                RSI: {item.indicatorsScan.rsiStatus}
+                              </span>
+                            </>
+                          )}
+                          {item.indicatorsScan.macdStatus && (
+                            <>
+                              <span className="text-slate-600">|</span>
+                              <span className={`text-[10px] font-medium ${item.indicatorsScan.macdStatus === 'BULLISH' ? 'text-emerald-400' : item.indicatorsScan.macdStatus === 'BEARISH' ? 'text-rose-400' : 'text-slate-400'}`}>
+                                MACD: {item.indicatorsScan.macdStatus}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      )}
 
                       {item.ema20 && item.ema50 && (
                         <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-300 pt-2 border-t border-slate-800 gap-2 font-mono">
