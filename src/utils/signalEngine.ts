@@ -52,7 +52,7 @@ export function getPairState(symbol: string): PairStateInfo {
   return info;
 }
 
-export function updatePairOnSignalClosed(symbol: string, result: "HIT TP" | "HIT SL") {
+export function updatePairOnSignalClosed(symbol: string, result: "HIT TP" | "HIT SL" | "EXPIRED") {
   const info = getPairState(symbol);
   const now = Date.now();
   info.activeSignalId = undefined;
@@ -67,6 +67,12 @@ export function updatePairOnSignalClosed(symbol: string, result: "HIT TP" | "HIT
     info.cooldownUntil = now + 7200000;
     info.state = "COOLDOWN";
     info.reason = `Cooling down 2h after LOSS (${info.consecutiveLosses} consecutive loss)`;
+  } else if (result === "EXPIRED") {
+    // Price drifted too far - neutral outcome, reset consecutive losses
+    info.consecutiveLosses = 0;
+    info.cooldownUntil = now + 300000; // 5 min cooldown
+    info.state = "COOLDOWN";
+    info.reason = "Cooling down 5min after price drift expired signal";
   }
 }
 

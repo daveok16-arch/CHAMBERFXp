@@ -625,7 +625,42 @@ ${utcFormatted}`;
         // Find existing ACTIVE signal for this symbol
         const existingIdx = updated.findIndex((s) => s.symbol === sym && (s.status === "ACTIVE" || !s.status));
 
-        if (existingIdx === -1) {
+        // Check if existing signal should be expired due to price drift
+        if (existingIdx !== -1) {
+          const existingSig = updated[existingIdx];
+          const priceDrift = Math.abs(livePrice - existingSig.entryPrice);
+          const baseSym = sym.endsWith("m") ? sym.slice(0, -1) : sym;
+          
+          // Calculate drift threshold based on asset type
+          let driftThreshold = 0;
+          if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) {
+            driftThreshold = livePrice * 0.001; // 0.1% for crypto
+          } else if (baseSym === "XAUUSD") {
+            driftThreshold = 5; // $5 for gold
+          } else {
+            driftThreshold = baseSym.includes("JPY") ? 0.03 : 0.0003; // 3 pips / 3 pips
+          }
+          
+          // If price drifted significantly from entry, expire old signal
+          if (priceDrift > driftThreshold) {
+            const { pipsOrPoints, pnlPct } = calculateSanitizedPipsOrPoints(sym, existingSig.entryPrice, livePrice, existingSig.direction);
+            updated[existingIdx] = {
+              ...existingSig,
+              result: "EXPIRED",
+              status: "EXPIRED",
+              resolvedAt: new Date().toISOString(),
+              pipsOrPoints,
+              pnlPct
+            };
+            // Remove from existingIdx since it's now expired
+            updated.splice(existingIdx, 1);
+          }
+        }
+
+        // Re-check for existing active signal after potential expiration
+        const currentIdx = updated.findIndex((s) => s.symbol === sym && (s.status === "ACTIVE" || !s.status));
+
+        if (currentIdx === -1) {
           // Check if pair state machine allows generating a new signal
           const check = canGenerateNewSignal(sym);
           const now = new Date();
@@ -1004,18 +1039,22 @@ ${utcFormatted}`;
       const diff = Math.abs(item.price - item.targets.entry);
       const baseSym = item.symbol.endsWith("m") ? item.symbol.slice(0, -1) : item.symbol;
       
+      // Stricter thresholds for faster signal refresh
       if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) {
         const pct = (diff / item.price) * 100;
-        if (pct > 0.5) return { isStale: true, reason: `Price drifted ${pct.toFixed(2)}% from entry`, ageSeconds, ageMins };
-        if (ageMins > 5 && pct > 0.3) return { isStale: true, reason: `Signal age > 5m & price moved ${pct.toFixed(2)}%`, ageSeconds, ageMins };
+        // Crypto: mark stale if > 0.1% drift (~$63 for BTC) or >2 mins old with >0.05% drift
+        if (pct > 0.1) return { isStale: true, reason: `Price drifted ${pct.toFixed(2)}% from entry`, ageSeconds, ageMins };
+        if (ageMins > 2 && pct > 0.05) return { isStale: true, reason: `Signal >2m & price moved ${pct.toFixed(2)}%`, ageSeconds, ageMins };
       } else if (baseSym === "XAUUSD") {
-        if (diff > 20) return { isStale: true, reason: `Gold drifted $${diff.toFixed(2)} from entry`, ageSeconds, ageMins };
-        if (ageMins > 5 && diff > 10) return { isStale: true, reason: `Signal age > 5m & Gold moved $${diff.toFixed(2)}`, ageSeconds, ageMins };
+        // Gold: mark stale if > $5 drift or >2 mins old with >$2 drift
+        if (diff > 5) return { isStale: true, reason: `Gold drifted $${diff.toFixed(2)} from entry`, ageSeconds, ageMins };
+        if (ageMins > 2 && diff > 2) return { isStale: true, reason: `Signal >2m & Gold moved $${diff.toFixed(2)}`, ageSeconds, ageMins };
       } else {
         const isJPY = baseSym.includes("JPY");
         const pips = isJPY ? diff * 100 : diff * 10000;
-        if (pips > 8) return { isStale: true, reason: `Forex drifted ${pips.toFixed(1)} pips from entry`, ageSeconds, ageMins };
-        if (ageMins > 5 && pips > 3) return { isStale: true, reason: `Signal age > 5m & price moved ${pips.toFixed(1)} pips`, ageSeconds, ageMins };
+        // Forex: mark stale if > 3 pips drift or >2 mins old with >1 pip drift
+        if (pips > 3) return { isStale: true, reason: `Forex drifted ${pips.toFixed(1)} pips from entry`, ageSeconds, ageMins };
+        if (ageMins > 2 && pips > 1) return { isStale: true, reason: `Signal >2m & price moved ${pips.toFixed(1)} pips`, ageSeconds, ageMins };
       }
     }
     return { isStale: false, reason: "", ageSeconds, ageMins };
