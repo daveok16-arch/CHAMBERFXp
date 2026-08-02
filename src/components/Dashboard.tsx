@@ -641,8 +641,14 @@ ${utcFormatted}`;
             driftThreshold = baseSym.includes("JPY") ? 0.03 : 0.0003; // 3 pips / 3 pips
           }
           
-          // If price drifted significantly from entry, expire old signal
-          if (priceDrift > driftThreshold) {
+          // Check for opposite signal (professional reversal detection)
+          const hasOppositeSignal = (
+            (existingSig.direction === "BUY" && item.recommendation.includes("SELL")) ||
+            (existingSig.direction === "SELL" && item.recommendation.includes("BUY"))
+          );
+
+          // If price drifted significantly OR opposite signal detected, expire old signal
+          if (priceDrift > driftThreshold || hasOppositeSignal) {
             const { pipsOrPoints, pnlPct } = calculateSanitizedPipsOrPoints(sym, existingSig.entryPrice, livePrice, existingSig.direction);
             updated[existingIdx] = {
               ...existingSig,
@@ -731,20 +737,45 @@ ${utcFormatted}`;
           let newStatus: "ACTIVE" | "HIT TP" | "HIT SL" | "EXPIRED" = "ACTIVE";
           let exitPrice: number | undefined = undefined;
 
+          // Calculate progress toward TP
+          const tpDistance = Math.abs(currentSig.tpPrice - currentSig.entryPrice);
+          const currentDistance = sigDir === "BUY" ? livePrice - currentSig.entryPrice : currentSig.entryPrice - livePrice;
+          const progressPct = tpDistance > 0 ? Math.max(0, (currentDistance / tpDistance) * 100) : 0;
+
           // Check TP Hit
           if ((sigDir === "BUY" && livePrice >= currentSig.tpPrice) || (sigDir === "SELL" && livePrice <= currentSig.tpPrice)) {
             newStatus = "HIT TP";
             exitPrice = currentSig.tpPrice;
           } 
+          // Check Trailing Stop (activates when >50% toward TP)
+          else if (progressPct >= 50) {
+            const trailingStop = sigDir === "BUY"
+              ? currentSig.entryPrice + (tpDistance * 0.5)
+              : currentSig.entryPrice - (tpDistance * 0.5);
+            if ((sigDir === "BUY" && livePrice <= trailingStop) || (sigDir === "SELL" && livePrice >= trailingStop)) {
+              newStatus = "HIT SL"; // Trailing stop hit - secure profits!
+              exitPrice = trailingStop;
+            }
+          }
           // Check SL Hit
           else if ((sigDir === "BUY" && livePrice <= currentSig.slPrice) || (sigDir === "SELL" && livePrice >= currentSig.slPrice)) {
             newStatus = "HIT SL";
             exitPrice = currentSig.slPrice;
           }
-          // Check Expiry (>24h)
+          // Check Time-based Expiry
           else {
             const birth = new Date(currentSig.createdAt || currentSig.fireTimestamp || currentSig.timestamp).getTime();
-            if (!isNaN(birth) && (Date.now() - birth) > 86400000) {
+            const ageHours = (Date.now() - birth) / 3600000;
+            
+            // Professional timeout rules:
+            // 1. If 4+ hours and <25% progress toward TP, expire (signal lost momentum)
+            // 2. If 8+ hours and <40% progress toward TP, expire
+            // 3. Max 24 hours always
+            const isStaleByTime = ageHours > 24;
+            const isLostMomentum4h = ageHours >= 4 && progressPct < 25;
+            const isLostMomentum8h = ageHours >= 8 && progressPct < 40;
+            
+            if (isStaleByTime || isLostMomentum4h || isLostMomentum8h) {
               newStatus = "EXPIRED";
               exitPrice = livePrice;
             }
