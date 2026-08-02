@@ -1199,6 +1199,32 @@ ${utcFormatted}`;
               const isCryptoOrGold = baseSym === "XAUUSD" || ["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym);
               const isBuy = item.recommendation.includes("BUY");
               const isSell = item.recommendation.includes("SELL");
+              
+              // Progress toward TP calculation
+              let progressPct = 0;
+              let progressLabel = "0% to TP";
+              let progressColor = "bg-slate-600";
+              if (item.targets?.entry && item.targets?.target1) {
+                const entry = item.targets.entry;
+                const tp = item.targets.target1;
+                const price = item.price;
+                const tpDist = Math.abs(tp - entry);
+                const priceProgress = isBuy ? price - entry : entry - price;
+                progressPct = tpDist > 0 ? (priceProgress / tpDist) * 100 : 0;
+                if (progressPct >= 100) {
+                  progressLabel = "✓ TP HIT!";
+                  progressColor = "bg-emerald-400";
+                } else if (progressPct >= 50) {
+                  progressLabel = `${progressPct.toFixed(0)}% to TP (trailing stop active)`;
+                  progressColor = "bg-amber-400";
+                } else if (progressPct > 0) {
+                  progressLabel = `${progressPct.toFixed(0)}% to TP`;
+                  progressColor = "bg-sky-400";
+                } else {
+                  progressLabel = `${Math.abs(progressPct).toFixed(0)}% below entry`;
+                  progressColor = "bg-rose-400";
+                }
+              }
               const isExpanded = !!expandedCards[sym];
               const tickDir = tickStates[sym];
               const staleInfo = calculateIsStale(item);
@@ -1347,6 +1373,19 @@ ${utcFormatted}`;
                         <span className="text-base font-semibold text-[#F87171] block">
                           {item.targets?.stopLoss ? `${isCryptoOrGold ? "$" : ""}${formatValue(sym, item.targets.stopLoss)}` : "—"}
                         </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PROGRESS TO TP BAR */}
+                  {item.targets && item.targets.entry && item.targets.target1 && (
+                    <div className="mb-2">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+                        <span className="text-sky-400">→ {progressLabel}</span>
+                        <span>{item.targets.rrProfile?.rrString || "1:2.0"}</span>
+                      </div>
+                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full ${progressColor} transition-all duration-500`} style={{ width: `${Math.min(100, Math.max(0, progressPct))}%` }} />
                       </div>
                     </div>
                   )}
