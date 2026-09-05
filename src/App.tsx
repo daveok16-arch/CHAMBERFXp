@@ -17,17 +17,18 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans flex flex-col selection:bg-amber-500/20" id="applet-container">
+    <div className="min-h-screen bg-[#04060c] text-slate-100 font-sans flex flex-col selection:bg-amber-500/20" id="applet-container">
       {/* Main Content Workspace Layout with Premium Container Padding */}
       <main className="flex-grow max-w-7xl w-full mx-auto px-4 md:px-6 py-6 flex flex-col" id="applet-viewport">
         <Dashboard />
       </main>
 
       {/* Footer banner */}
-      <footer className="border-t border-slate-800 bg-[#0B1120] py-4 px-6 text-center shadow-xs" id="applet-footer">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-2 text-xs md:text-sm text-slate-400 uppercase tracking-wider font-semibold font-mono">
-          <span>CHAMBERFX © Private Institutional Syndicate — SECURE TERMINAL PORT</span>
-          <span className="text-amber-500 font-bold">Spot & Futures Quantitative Market Intelligence</span>
+      <footer className="border-t border-slate-800/70 bg-[#060a12] py-4 px-6 text-center" id="applet-footer">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-2 text-[11px] md:text-xs text-slate-500 uppercase tracking-widest font-semibold font-mono">
+          <span>CHAMBERFX <span className="text-slate-600">·</span> Private Institutional Terminal</span>
+          <span className="text-amber-500/90 font-bold">Spot × Futures Quantitative Intelligence</span>
+          <span className="hidden lg:block text-slate-600">Data latency ≤ 30s · Fallbacks active</span>
         </div>
       </footer>
     </div>
