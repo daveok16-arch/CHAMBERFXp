@@ -1,6 +1,8 @@
 node_modules/
 build/
-dist/
+# dist/ is committed so `npm run start` works even when a
+# platform (e.g. Render) skips the build step. Rebuilds overwrite it.
+# dist/
 coverage/
 .DS_Store
 *.log
