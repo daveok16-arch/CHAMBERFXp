@@ -1,0 +1,49 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      ENGINE_URL: http://engine:8800
+      DATABASE_URL: postgres://chamberfx:chamberfx@db:5432/chamberfx
+      REDIS_URL: redis://redis:6379
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-token}
+    depends_on:
+      - engine
+      - db
+      - redis
+    volumes:
+      - signal_data:/app/data
+
+  engine:
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    environment:
+      ENGINE_PORT: 8800
+      DATABASE_URL: postgres://chamberfx:chamberfx@db:5432/chamberfx
+    depends_on:
+      - db
+    volumes:
+      - model_data:/app/engine/models
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: chamberfx
+      POSTGRES_PASSWORD: chamberfx
+      POSTGRES_DB: chamberfx
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  signal_data:
+  model_data:
+  pg_data:

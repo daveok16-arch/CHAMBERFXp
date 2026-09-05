@@ -512,27 +512,55 @@ ${utcFormatted}`;
       .catch(() => {});
   }, []);
 
-  // Poll the server-authoritative signal store so this view stays in sync
-  // across tabs/clients (server is the source of truth; local edits still work).
+  // Live signal push via SSE (server is source of truth) with a slow poll
+  // fallback so the dashboard stays in sync even if SSE drops.
   useEffect(() => {
-    const pollServerSignals = () => {
+    let es: EventSource | null = null;
+    let closed = false;
+
+    const applyServerSignals = (list: AuditedSignalItem[]) => {
+      setSignals((prev) => {
+        const merged = list.map((remote) => {
+          const existing = prev.find((l) => l.id === remote.id);
+          return existing ? { ...remote, ...existing } : remote;
+        });
+        return merged;
+      });
+    };
+
+    const connect = () => {
+      es = new EventSource("/api/events");
+      es.addEventListener("signals", (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data);
+          if (Array.isArray(data?.signals)) applyServerSignals(data.signals);
+        } catch {
+          // ignore malformed SSE payloads
+        }
+      });
+      es.onerror = () => {
+        es?.close();
+        if (!closed) setTimeout(connect, 5000); // reconnect with backoff
+      };
+    };
+    connect();
+
+    const poll = setInterval(() => {
       fetch("/api/signals")
         .then((res) => res.json())
         .then((data) => {
           if (data && Array.isArray(data.signals) && data.signals.length > 0) {
-            setSignals((prev) => {
-              const merged = data.signals.map((remote: AuditedSignalItem) => {
-                const existing = prev.find((l) => l.id === remote.id);
-                return existing ? { ...remote, ...existing } : remote;
-              });
-              return merged;
-            });
+            applyServerSignals(data.signals);
           }
         })
         .catch(() => {});
+    }, 15000);
+
+    return () => {
+      closed = true;
+      es?.close();
+      clearInterval(poll);
     };
-    const t = setInterval(pollServerSignals, 15000);
-    return () => clearInterval(t);
   }, []);
 
   // Synchronize Live Signals and Audit Log Engine in real-time

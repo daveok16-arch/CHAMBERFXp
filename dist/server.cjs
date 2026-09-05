@@ -402,68 +402,118 @@ function computeAdxArray(highs, lows, closes, period) {
   return adx;
 }
 
-// server/signalStore.ts
+// server/store.ts
 var import_fs = __toESM(require("fs"), 1);
 var import_path = __toESM(require("path"), 1);
 var DATA_DIR = import_path.default.join(process.cwd(), "data");
 var STORE_FILE = import_path.default.join(DATA_DIR, "signals.json");
-var cache = null;
+var usePg = false;
+var pgPool = null;
+async function initPg() {
+  if (!process.env.DATABASE_URL) return;
+  try {
+    const { Pool } = await import("pg");
+    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS signals (
+        id TEXT PRIMARY KEY,
+        doc JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    usePg = true;
+    console.log("[store] using PostgreSQL");
+  } catch (e) {
+    console.error("[store] Postgres unavailable, falling back to JSON file:", e.message);
+    usePg = false;
+  }
+}
 function ensureDir() {
   if (!import_fs.default.existsSync(DATA_DIR)) import_fs.default.mkdirSync(DATA_DIR, { recursive: true });
 }
-function load() {
-  if (cache) return cache;
+function loadJson() {
   ensureDir();
   try {
     if (import_fs.default.existsSync(STORE_FILE)) {
-      const raw = import_fs.default.readFileSync(STORE_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) cache = parsed;
+      const parsed = JSON.parse(import_fs.default.readFileSync(STORE_FILE, "utf-8"));
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (e) {
-    console.error("[signalStore] failed to load signals.json:", e);
+    console.error("[store] failed to load signals.json:", e);
   }
-  if (!cache) cache = [];
-  return cache;
+  return [];
 }
-function persist() {
+function persistJson(signals) {
   ensureDir();
   const tmp = STORE_FILE + ".tmp";
-  import_fs.default.writeFileSync(tmp, JSON.stringify(cache ?? [], null, 2));
+  import_fs.default.writeFileSync(tmp, JSON.stringify(signals, null, 2));
   import_fs.default.renameSync(tmp, STORE_FILE);
 }
-function getSignals() {
-  return load();
+var jsonCache = null;
+async function initStore() {
+  await initPg();
+  if (!usePg) jsonCache = loadJson();
 }
-function replaceSignals(signals) {
-  cache = signals;
-  persist();
-  return cache.length;
+async function getSignals() {
+  if (usePg) {
+    const { rows } = await pgPool.query("SELECT doc FROM signals ORDER BY updated_at DESC");
+    return rows.map((r) => r.doc);
+  }
+  return jsonCache ?? [];
 }
-function upsertSignal(signal) {
-  const list = load();
+async function replaceSignals(signals) {
+  if (usePg) {
+    const client = await pgPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM signals");
+      for (const s of signals) {
+        await client.query("INSERT INTO signals (id, doc) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc", [s.id, JSON.stringify(s)]);
+      }
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+    return signals.length;
+  }
+  jsonCache = signals;
+  persistJson(signals);
+  return signals.length;
+}
+async function upsertSignal(signal) {
+  if (usePg) {
+    await pgPool.query(
+      "INSERT INTO signals (id, doc) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()",
+      [signal.id, JSON.stringify(signal)]
+    );
+    return;
+  }
+  const list = jsonCache ?? [];
   const idx = list.findIndex((s) => s.id === signal.id);
   if (idx >= 0) list[idx] = { ...list[idx], ...signal };
   else list.unshift(signal);
-  cache = list;
-  persist();
+  jsonCache = list;
+  persistJson(list);
 }
-function clearSignals() {
-  cache = [];
-  persist();
+async function clearSignals() {
+  if (usePg) {
+    await pgPool.query("DELETE FROM signals");
+    return;
+  }
+  jsonCache = [];
+  persistJson([]);
 }
-function pruneOldSignals(maxAgeDays = 30) {
-  const list = load();
+async function pruneOldSignals(maxAgeDays = 30) {
+  const all = await getSignals();
   const cutoff = Date.now() - maxAgeDays * 864e5;
-  const kept = list.filter((s) => {
+  const kept = all.filter((s) => {
     const t = new Date(s.createdAt || s.fireTimestamp || s.timestamp).getTime();
     return !isNaN(t) && t >= cutoff;
   });
-  const removed = list.length - kept.length;
-  if (removed > 0) {
-    cache = kept;
-    persist();
-  }
+  const removed = all.length - kept.length;
+  if (removed > 0) await replaceSignals(kept);
   return removed;
 }
 
@@ -752,7 +802,7 @@ var ASSETS = [
   "CADJPY",
   "CHFJPY"
 ];
-function startSignalReconciler(scanFn, intervalMs = 3e4) {
+function startSignalReconciler(scanFn, intervalMs = 3e4, publish) {
   let running = false;
   let lastResult = null;
   let timer = null;
@@ -766,18 +816,19 @@ function startSignalReconciler(scanFn, intervalMs = 3e4) {
       for (const r of results) {
         if (r.status === "fulfilled" && r.value) scans.push(r.value);
       }
-      const prev = getSignals();
+      const prev = await getSignals();
       const outcome = reconcileSignals(prev, scans);
       const next = dedupeKeepNewest(outcome.signals);
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
-        replaceSignals(next);
+        await replaceSignals(next);
       }
-      pruneOldSignals(30);
+      await pruneOldSignals(30);
       lastResult = summarizeResult({ ...outcome, signals: next, scanned: scans.length });
       const detail = lastResult;
       if (detail.generated > 0 || detail.expired > 0 || detail.closed > 0) {
         console.log(`[reconciler] scans=${detail.scanned} gen=${detail.generated} exp=${detail.expired} close=${detail.closed} active=${detail.totalActive}`);
       }
+      if (publish) publish(next, detail.generated, detail.closed, detail.expired);
     } catch (e) {
       console.error("[reconciler] pass failed:", e.message || e);
     } finally {
@@ -802,6 +853,39 @@ function dedupeKeepNewest(signals) {
     seen.add(s.id);
     return true;
   });
+}
+
+// server/sseHub.ts
+var clients = /* @__PURE__ */ new Set();
+function sseConnect(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.write(": connected\n\n");
+  clients.add(res);
+  req.on("close", () => {
+    clients.delete(res);
+  });
+  const hb = setInterval(() => {
+    res.write(": hb\n\n");
+  }, 25e3);
+  res.on("close", () => clearInterval(hb));
+}
+function broadcastSignals(signals, generated, closed, expired) {
+  const payload = JSON.stringify({ type: "signals", signals, generated, closed, expired, ts: (/* @__PURE__ */ new Date()).toISOString() });
+  for (const client of clients) {
+    try {
+      client.write(`event: signals
+data: ${payload}
+
+`);
+    } catch {
+      clients.delete(client);
+    }
+  }
 }
 
 // server/hardening.ts
@@ -938,25 +1022,30 @@ app.get("/api/python/logs", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json(healthInfo());
 });
-app.get("/api/signals", (req, res) => {
-  res.json({ signals: getSignals() });
+app.get("/api/events", (req, res) => {
+  sseConnect(req, res);
 });
-app.post("/api/signals", requireAdmin, (req, res) => {
+app.get("/api/signals", async (req, res) => {
+  const signals = await getSignals();
+  res.json({ signals });
+});
+app.post("/api/signals", requireAdmin, async (req, res) => {
   const { signals: incomingSignals, signal: incomingSignal } = req.body;
   if (Array.isArray(incomingSignals)) {
-    const count = replaceSignals(incomingSignals);
+    const count = await replaceSignals(incomingSignals);
+    broadcastSignals(incomingSignals, 0, 0, 0);
     res.json({ success: true, count });
     return;
   }
   if (incomingSignal && incomingSignal.id) {
-    upsertSignal(incomingSignal);
-    res.json({ success: true, count: getSignals().length });
+    await upsertSignal(incomingSignal);
+    res.json({ success: true, count: (await getSignals()).length });
     return;
   }
   res.status(400).json({ error: "No signals payload" });
 });
-app.delete("/api/signals", requireAdmin, (req, res) => {
-  clearSignals();
+app.delete("/api/signals", requireAdmin, async (req, res) => {
+  await clearSignals();
   res.json({ success: true, count: 0 });
 });
 app.get("/api/python/status", async (req, res) => {
@@ -2048,6 +2137,7 @@ app.post("/api/backtest", async (req, res) => {
   }
 });
 async function bootstrap() {
+  await initStore();
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({
       server: { middlewareMode: true, allowedHosts: true },
@@ -2083,7 +2173,9 @@ async function bootstrap() {
     } catch {
       return null;
     }
-  }, 3e4);
+  }, 3e4, (signals, generated, closed, expired) => {
+    broadcastSignals(signals, generated, closed, expired);
+  });
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`\u26A1 Express Server booted on port ${PORT}`);
     console.log(`[server] Express server successfully initialized on port ${PORT}`);

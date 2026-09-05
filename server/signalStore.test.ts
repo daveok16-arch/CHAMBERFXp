@@ -8,8 +8,8 @@ import { ServerSignal } from "../src/shared/signal";
 // Use an isolated data dir for store tests.
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "chamberfx-store-"));
 
-// The store module reads DATA_DIR at import from process.cwd(). To keep the
-// tests exercising the real store without polluting dev data, we swap cwd.
+// The store module reads DATA_DIR from process.cwd(). Swap cwd so tests don't
+// pollute dev data, then restore.
 const realCwd = process.cwd();
 
 function makeSig(id: string): ServerSignal {
@@ -33,24 +33,24 @@ function makeSig(id: string): ServerSignal {
   };
 }
 
-describe("signalStore persistence", () => {
+describe("store persistence (JSON backend)", () => {
   before(() => {
+    process.env.DATABASE_URL = ""; // force JSON backend
     fs.mkdirSync(path.join(TEST_DATA_DIR, "data"), { recursive: true });
     process.chdir(TEST_DATA_DIR);
   });
   after(() => {
+    delete process.env.DATABASE_URL;
     process.chdir(realCwd);
   });
 
-  test("writes and reads back durable JSON", async () => {
-    const store = await import("./signalStore");
-    store.clearSignals();
-    store.upsertSignal(makeSig("sig-a"));
-    store.upsertSignal(makeSig("sig-b"));
-    assert.equal(store.getSignals().length, 2);
-
-    // Simulate a restart: drop the cached module so it re-reads from disk.
-    const loaded = store.getSignals();
+  test("initStore, write + read back durable JSON", async () => {
+    const store: any = await import("./store");
+    await store.initStore();
+    await store.clearSignals();
+    await store.upsertSignal(makeSig("sig-a"));
+    await store.upsertSignal(makeSig("sig-b"));
+    const loaded = await store.getSignals();
     assert.equal(loaded.length, 2);
     assert.ok(loaded.some((s) => s.id === "sig-a"));
     assert.ok(loaded.some((s) => s.id === "sig-b"));
@@ -61,14 +61,14 @@ describe("signalStore persistence", () => {
     const parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
     assert.equal(parsed.length, 2);
 
-    store.clearSignals();
+    await store.clearSignals();
   });
 
   test("replaceSignals + clearSignals", async () => {
-    const store = await import("./signalStore");
-    store.replaceSignals([makeSig("x"), makeSig("y")]);
-    assert.equal(store.getSignals().length, 2);
-    store.clearSignals();
-    assert.equal(store.getSignals().length, 0);
+    const store: any = await import("./store");
+    await store.replaceSignals([makeSig("x"), makeSig("y")]);
+    assert.equal((await store.getSignals()).length, 2);
+    await store.clearSignals();
+    assert.equal((await store.getSignals()).length, 0);
   });
 });

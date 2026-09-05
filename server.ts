@@ -12,9 +12,10 @@ import {
   computeBollingerBandsWidthArray, computeAtrArray, computeAdxArray
 } from "./src/utils/indicators";
 import {
-  getSignals, getActiveSignals, replaceSignals, upsertSignal, clearSignals, pruneOldSignals,
-} from "./server/signalStore";
+  initStore, getSignals, getActiveSignals, replaceSignals, upsertSignal, clearSignals, pruneOldSignals,
+} from "./server/store";
 import { startSignalReconciler } from "./server/signalReconciler";
+import { sseConnect, broadcastSignals } from "./server/sseHub";
 import {
   requestId, requireAdmin, healthInfo, fetchWithTimeout, ADMIN_TOKEN,
 } from "./server/hardening";
@@ -124,29 +125,36 @@ app.get("/api/health", (req, res) => {
   res.json(healthInfo());
 });
 
+// API: Server-Sent Events (live signal push)
+app.get("/api/events", (req, res) => {
+  sseConnect(req, res);
+});
+
 // API: Get live signals (durable store)
-app.get("/api/signals", (req, res) => {
-  res.json({ signals: getSignals() });
+app.get("/api/signals", async (req, res) => {
+  const signals = await getSignals();
+  res.json({ signals });
 });
 
 // API: Upsert signals (idempotent; client compatibility path)
-app.post("/api/signals", requireAdmin, (req, res) => {
+app.post("/api/signals", requireAdmin, async (req, res) => {
   const { signals: incomingSignals, signal: incomingSignal } = req.body;
   if (Array.isArray(incomingSignals)) {
-    const count = replaceSignals(incomingSignals);
+    const count = await replaceSignals(incomingSignals);
+    broadcastSignals(incomingSignals, 0, 0, 0);
     res.json({ success: true, count });
     return;
   }
   if (incomingSignal && incomingSignal.id) {
-    upsertSignal(incomingSignal);
-    res.json({ success: true, count: getSignals().length });
+    await upsertSignal(incomingSignal);
+    res.json({ success: true, count: (await getSignals()).length });
     return;
   }
   res.status(400).json({ error: "No signals payload" });
 });
 
-app.delete("/api/signals", requireAdmin, (req, res) => {
-  clearSignals();
+app.delete("/api/signals", requireAdmin, async (req, res) => {
+  await clearSignals();
   res.json({ success: true, count: 0 });
 });
 
@@ -1435,6 +1443,8 @@ app.post("/api/backtest", async (req, res) => {
 // SEAMLESS INTEGRATION OF VITE DEV SERVER / PRODUCTION STATICS BUILD
 // -----------------------------------------------------------------------------
 async function bootstrap() {
+  await initStore();
+
   if (process.env.NODE_ENV !== "production") {
     // In development mode, mount Vite direct server middleware
     const vite = await createViteServer({
@@ -1475,7 +1485,9 @@ async function bootstrap() {
     } catch {
       return null;
     }
-  }, 30000);
+  }, 30000, (signals, generated, closed, expired) => {
+    broadcastSignals(signals, generated, closed, expired);
+  });
 
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`⚡ Express Server booted on port ${PORT}`);

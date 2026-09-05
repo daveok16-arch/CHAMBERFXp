@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.git
+*.log
+.env
+engine/models/model_*
+engine/models/latest
+engine/models/latest_metadata.json
+__pycache__
+*.pyc
+trading_bot.db

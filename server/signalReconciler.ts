@@ -5,12 +5,12 @@ import {
   getSignals,
   replaceSignals,
   pruneOldSignals,
-} from "./signalStore";
+} from "./store";
 import {
   reconcileSignals,
   summarizeResult,
 } from "./signalEngine";
-import { ScanSnapshot, ReconcilerResult } from "../src/shared/signal";
+import { ScanSnapshot, ReconcilerResult, ServerSignal } from "../src/shared/signal";
 
 const ASSETS = [
   "BTCUSD", "ETHUSD", "SOLUSD", "XAUUSD",
@@ -19,8 +19,13 @@ const ASSETS = [
 ];
 
 type ScanFn = (symbol: string) => Promise<ScanSnapshot | null>;
+export type PublishFn = (signals: ServerSignal[], generated: number, closed: number, expired: number) => void;
 
-export function startSignalReconciler(scanFn: ScanFn, intervalMs = 30000): { stop: () => void; lastResult: () => ReconcilerResult | null } {
+export function startSignalReconciler(
+  scanFn: ScanFn,
+  intervalMs = 30000,
+  publish?: PublishFn
+): { stop: () => void; lastResult: () => ReconcilerResult | null } {
   let running = false;
   let lastResult: ReconcilerResult | null = null;
   let timer: NodeJS.Timeout | null = null;
@@ -36,20 +41,21 @@ export function startSignalReconciler(scanFn: ScanFn, intervalMs = 30000): { sto
         if (r.status === "fulfilled" && r.value) scans.push(r.value);
       }
 
-      const prev = getSignals();
+      const prev = await getSignals();
       const outcome = reconcileSignals(prev, scans);
       const next = dedupeKeepNewest(outcome.signals);
 
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
-        replaceSignals(next);
+        await replaceSignals(next);
       }
-      pruneOldSignals(30);
+      await pruneOldSignals(30);
 
       lastResult = summarizeResult({ ...outcome, signals: next, scanned: scans.length });
       const detail = lastResult;
       if (detail.generated > 0 || detail.expired > 0 || detail.closed > 0) {
         console.log(`[reconciler] scans=${detail.scanned} gen=${detail.generated} exp=${detail.expired} close=${detail.closed} active=${detail.totalActive}`);
       }
+      if (publish) publish(next, detail.generated, detail.closed, detail.expired);
     } catch (e) {
       console.error("[reconciler] pass failed:", (e as Error).message || e);
     } finally {
