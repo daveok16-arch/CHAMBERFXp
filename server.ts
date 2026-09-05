@@ -208,11 +208,27 @@ app.post("/api/python/stop", (req, res) => {
 
 // 4. Sqlite Databases Bridge endpoints
 app.get("/api/python/db/predictions", async (req, res) => {
-  res.json([]);
+  try {
+    const limit = req.query.limit ? Math.min(parseInt(String(req.query.limit), 10) || 100, 500) : 100;
+    const predictions = await runPythonQuery(
+      `import json; from storage import get_predictions_as_dicts; print(json.dumps(get_predictions_as_dicts(limit=${limit}), default=str))`
+    );
+    res.json(predictions);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/python/db/trades", async (req, res) => {
-  res.json([]);
+  try {
+    const limit = req.query.limit ? Math.min(parseInt(String(req.query.limit), 10) || 100, 500) : 100;
+    const trades = await runPythonQuery(
+      `import json; from storage import get_trades_as_dicts; print(json.dumps(get_trades_as_dicts(limit=${limit}), default=str))`
+    );
+    res.json(trades);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // -----------------------------------------------------------------------------

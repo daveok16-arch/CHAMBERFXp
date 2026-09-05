@@ -142,6 +142,24 @@ def update_prediction_outcome(prediction_id: int, actual_outcome: int) -> None:
         logger.error(f"Failed to update prediction outcome (ID: {prediction_id}): {e}", exc_info=True)
 
 
+def get_unresolved_predictions(limit: int = 500) -> List[Tuple]:
+    """Returns predictions whose actual_outcome has not been resolved yet."""
+    try:
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, timestamp, symbol, predicted_direction FROM predictions "
+            "WHERE actual_outcome IS NULL ORDER BY id ASC LIMIT ?",
+            (int(limit),),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    except sqlite3.Error as e:
+        logger.error(f"Failed to fetch unresolved predictions: {e}")
+        return []
+
+
 def log_trade_entry(
     symbol: str,
     direction: str,
@@ -224,3 +242,37 @@ def get_all_logged_trades() -> List[Tuple]:
     except sqlite3.Error as e:
         logger.error(f"Failed to fetch executed trades: {e}")
         return []
+
+
+def _rows_as_dicts(cursor) -> List[Dict[str, Any]]:
+    """Convert a cursor's fetchall result into JSON-friendly row dicts."""
+    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def get_predictions_as_dicts(limit: int = 100) -> List[Dict[str, Any]]:
+    """Returns recent predictions as JSON-friendly dict rows (newest first)."""
+    try:
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT ?", (int(limit),))
+        return _rows_as_dicts(cursor)
+    except sqlite3.Error as e:
+        logger.error(f"Failed to fetch predictions: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_trades_as_dicts(limit: int = 100) -> List[Dict[str, Any]]:
+    """Returns recent executed trades as JSON-friendly dict rows (newest first)."""
+    try:
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (int(limit),))
+        return _rows_as_dicts(cursor)
+    except sqlite3.Error as e:
+        logger.error(f"Failed to fetch executed trades: {e}")
+        return []
+    finally:
+        conn.close()

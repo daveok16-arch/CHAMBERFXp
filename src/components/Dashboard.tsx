@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
-import { 
-  Clock, 
-  ChevronDown, 
-  ChevronUp, 
-  Copy, 
+import {
+  Clock,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Sparkles,
   X,
   Vault,
@@ -20,13 +20,13 @@ import {
 import { getAssetRRProfile } from "../utils/rrFramework";
 import { getMarketStatus, calculateMarketAwareAge, MarketStatus } from "../utils/marketHours";
 import { AuditedSignalItem } from "../types";
-import { 
-  canGenerateNewSignal, 
-  recordSignalGenerated, 
-  updatePairOnSignalClosed, 
-  calculateSanitizedPipsOrPoints, 
-  deduplicateSignals, 
-  getSignalAgeString, 
+import {
+  canGenerateNewSignal,
+  recordSignalGenerated,
+  updatePairOnSignalClosed,
+  calculateSanitizedPipsOrPoints,
+  deduplicateSignals,
+  getSignalAgeString,
   getPairState
 } from "../utils/signalEngine";
 
@@ -410,10 +410,10 @@ export default function Dashboard() {
   };
 
   const copySignal = (symbol: string, item: MarqueeScanItem) => {
-    const directionShort = item.recommendation.includes("BUY") 
-      ? "BUY" 
-      : item.recommendation.includes("SELL") 
-      ? "SELL" 
+    const directionShort = item.recommendation.includes("BUY")
+      ? "BUY"
+      : item.recommendation.includes("SELL")
+      ? "SELL"
       : "NEUTRAL";
 
     const liveEntry = item.price || item.targets?.entry || 0;
@@ -454,7 +454,7 @@ ${utcFormatted}`;
 
   useEffect(() => {
     setMarketScans(initialAssetFeed);
-    
+
     const fetchMarketData = (category?: "crypto" | "forex") => {
       const endpoint = category ? `/api/market-scan?type=${category}` : "/api/market-scan";
       fetch(endpoint)
@@ -515,42 +515,9 @@ ${utcFormatted}`;
     const cryptoPollingTimer = setInterval(() => fetchMarketData("crypto"), 15000);
     const forexPollingTimer = setInterval(() => fetchMarketData("forex"), 30000);
 
-    const pricingTimer = setInterval(() => {
-      setMarketScans((prevList) => {
-        if (!prevList || prevList.length === 0) return prevList;
-        const indexesToTick = Array.from({ length: 3 }, () => Math.floor(Math.random() * prevList.length));
-        
-        return prevList.map((item, idx) => {
-          if (indexesToTick.includes(idx)) {
-            const baseSymbol = item.symbol.endsWith("m") ? item.symbol.slice(0, -1) : item.symbol;
-            const isCrypto = ["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSymbol.toUpperCase());
-            const isGold = baseSymbol.toUpperCase() === "XAUUSD";
-            const fluctuationRange = isCrypto ? 2.5 : (isGold ? 0.35 : 0.00004);
-            const deviation = (Math.random() * (fluctuationRange * 2) - fluctuationRange);
-            const updatedPrice = item.price + deviation;
-            const isUp = deviation > 0;
-            
-            setTickStates(prev => ({ ...prev, [item.symbol]: isUp ? "UP" : "DOWN" }));
-
-            setTimeout(() => {
-              setTickStates(prev => ({ ...prev, [item.symbol]: null }));
-            }, 600);
-
-            return {
-              ...item,
-              price: updatedPrice,
-              changePct: item.changePct + (deviation / item.price) * 100
-            };
-          }
-          return item;
-        });
-      });
-    }, 2500);
-
     return () => {
       clearInterval(cryptoPollingTimer);
       clearInterval(forexPollingTimer);
-      clearInterval(pricingTimer);
     };
   }, []);
 
@@ -630,7 +597,7 @@ ${utcFormatted}`;
           const existingSig = updated[existingIdx];
           const priceDrift = Math.abs(livePrice - existingSig.entryPrice);
           const baseSym = sym.endsWith("m") ? sym.slice(0, -1) : sym;
-          
+
           // Calculate drift threshold based on asset type
           let driftThreshold = 0;
           if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) {
@@ -640,7 +607,7 @@ ${utcFormatted}`;
           } else {
             driftThreshold = baseSym.includes("JPY") ? 0.03 : 0.0003; // 3 pips / 3 pips
           }
-          
+
           // Check for opposite signal (professional reversal detection)
           const hasOppositeSignal = (
             (existingSig.direction === "BUY" && item.recommendation.includes("SELL")) ||
@@ -746,7 +713,7 @@ ${utcFormatted}`;
           if ((sigDir === "BUY" && livePrice >= currentSig.tpPrice) || (sigDir === "SELL" && livePrice <= currentSig.tpPrice)) {
             newStatus = "HIT TP";
             exitPrice = currentSig.tpPrice;
-          } 
+          }
           // Check Trailing Stop (activates when >50% toward TP)
           else if (progressPct >= 50) {
             const trailingStop = sigDir === "BUY"
@@ -766,7 +733,7 @@ ${utcFormatted}`;
           else {
             const birth = new Date(currentSig.createdAt || currentSig.fireTimestamp || currentSig.timestamp).getTime();
             const ageHours = (Date.now() - birth) / 3600000;
-            
+
             // Professional timeout rules:
             // 1. If 4+ hours and <25% progress toward TP, expire (signal lost momentum)
             // 2. If 8+ hours and <40% progress toward TP, expire
@@ -774,7 +741,7 @@ ${utcFormatted}`;
             const isStaleByTime = ageHours > 24;
             const isLostMomentum4h = ageHours >= 4 && progressPct < 25;
             const isLostMomentum8h = ageHours >= 8 && progressPct < 40;
-            
+
             if (isStaleByTime || isLostMomentum4h || isLostMomentum8h) {
               newStatus = "EXPIRED";
               exitPrice = livePrice;
@@ -900,7 +867,7 @@ ${utcFormatted}`;
     const isGold = baseSym === "XAUUSD";
     const isBuy = item.recommendation.toLowerCase().includes("buy");
     const isSell = item.recommendation.toLowerCase().includes("sell");
-    
+
     let trendState = "EMA20 / EMA50 Neutral Alignment";
     if (item.ema20 && item.ema50) {
       if (item.ema20 > item.ema50) {
@@ -943,11 +910,11 @@ ${utcFormatted}`;
 
     const s1Source = item.keyLevelsCalc?.s1Source || "24h Low";
     const r1Source = item.keyLevelsCalc?.r1Source || "24h High";
-    
+
     const isCryptoOrGold = isCrypto || isGold;
     const fmtS1 = isCryptoOrGold ? `$${formatValue(sym, s1Val)}` : formatValue(sym, s1Val);
     const fmtR1 = isCryptoOrGold ? `$${formatValue(sym, r1Val)}` : formatValue(sym, r1Val);
-    
+
     let keyLevels = `S1: ${fmtS1} (${s1Source}) | R1: ${fmtR1} (${r1Source})`;
 
     // Add S2 and R2 second levels if available
@@ -975,7 +942,7 @@ ${utcFormatted}`;
       const funding = `Spot Orderbook Feed (${session.split(" — ")[0]})`;
       const dominance = `Spot Feed: ${baseSym} / USDT`;
       const flow = `24h Change: ${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}% | 15m ATR Volatility: ${atrPct}% of price`;
-        
+
       return { trendState, volatility, keyLevels, session, cryptoContext: { funding, dominance, flow }, isCrypto: true };
     } else {
       if (sym === "EURUSD" || sym === "GBPUSD") {
@@ -1043,12 +1010,12 @@ ${utcFormatted}`;
     const rsiStatusStr = rsi15m < 35 ? "Oversold" : rsi15m > 65 ? "Overbought" : "Neutral";
     const rsiText = `RSI at ${rsi15m.toFixed(1)} on 15m timeframe (${rsiStatusStr})${rsi1h ? ` and ${rsi1h.toFixed(1)} on 1h timeframe` : ""}.`;
 
-    const atrValStr = atr 
+    const atrValStr = atr
       ? ((isCrypto || isGold) ? `$${atr.toFixed(2)}` : `${(atr * 10000).toFixed(1)} pips`)
       : "N/A";
 
-    const volRegime = (atr && price && (atr / price > 0.008)) 
-      ? "High volatility regime." 
+    const volRegime = (atr && price && (atr / price > 0.008))
+      ? "High volatility regime."
       : "Moderate volatility regime.";
 
     const atrText = `ATR at ${atrValStr} — ${volRegime}`;
@@ -1061,15 +1028,15 @@ ${utcFormatted}`;
     const timestamp = item.lastUpdatedTimestamp || now;
     const ageSeconds = Math.max(0, Math.floor((now - timestamp) / 1000));
     const ageMins = ageSeconds / 60;
-    
+
     if (item.isStale) {
       return { isStale: true, reason: item.staleReason || "STALE DATA FEED", ageSeconds, ageMins };
     }
-    
+
     if (item.targets?.entry && item.price) {
       const diff = Math.abs(item.price - item.targets.entry);
       const baseSym = item.symbol.endsWith("m") ? item.symbol.slice(0, -1) : item.symbol;
-      
+
       // Stricter thresholds for faster signal refresh
       if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) {
         const pct = (diff / item.price) * 100;
@@ -1109,14 +1076,14 @@ ${utcFormatted}`;
 
   return (
     <div className="space-y-6 animate-fade-in text-slate-100 font-sans pb-16 max-w-7xl mx-auto" id="chamber-bloomberg-dashboard-root">
-      
+
       {/* Toast Notifications Stack */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm w-full" id="toast-mount-stack">
         {toasts.map((t) => (
           <div
             key={t.id}
             className={`flex items-start justify-between gap-3 p-3.5 rounded-lg border shadow-lg backdrop-blur-md animate-fade-in text-xs font-sans ${
-              t.type === "success" ? "bg-[#1E293B] border-emerald-500/50 text-slate-100 border-l-4 border-l-emerald-500" : 
+              t.type === "success" ? "bg-[#1E293B] border-emerald-500/50 text-slate-100 border-l-4 border-l-emerald-500" :
               t.type === "error" ? "bg-[#1E293B] border-rose-500/50 text-slate-100 border-l-4 border-l-rose-500" :
               t.type === "warning" ? "bg-[#1E293B] border-amber-500/50 text-slate-100 border-l-4 border-l-amber-500" :
               "bg-[#1E293B] border-slate-700 text-slate-100 border-l-4 border-l-amber-500"
@@ -1199,7 +1166,7 @@ ${utcFormatted}`;
               const isCryptoOrGold = baseSym === "XAUUSD" || ["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym);
               const isBuy = item.recommendation.includes("BUY");
               const isSell = item.recommendation.includes("SELL");
-              
+
               // Progress toward TP calculation
               let progressPct = 0;
               let progressLabel = "0% to TP";
@@ -1235,9 +1202,9 @@ ${utcFormatted}`;
                 : marketAge.formattedAge;
 
               // Old Signal Handling (>4h warning, >24h auto-EXPIRED)
-              const signalStartMs = cardActiveSig?.createdAt 
+              const signalStartMs = cardActiveSig?.createdAt
                 ? new Date(cardActiveSig.createdAt).getTime()
-                : (cardActiveSig?.fireTimestamp 
+                : (cardActiveSig?.fireTimestamp
                   ? new Date(cardActiveSig.fireTimestamp).getTime()
                   : (item.lastUpdatedTimestamp || Date.now()));
               const ageHours = (Date.now() - signalStartMs) / 3600000;
@@ -1254,12 +1221,12 @@ ${utcFormatted}`;
               // Direction border highlight
               const borderAccent = !mStatus.isOpen
                 ? "border-l-4 border-l-slate-600"
-                : mStatus.isLowLiquidity || staleInfo.isStale 
-                ? "border-l-4 border-l-amber-500" 
-                : isBuy 
-                ? "border-l-4 border-l-emerald-500" 
-                : isSell 
-                ? "border-l-4 border-l-rose-500" 
+                : mStatus.isLowLiquidity || staleInfo.isStale
+                ? "border-l-4 border-l-amber-500"
+                : isBuy
+                ? "border-l-4 border-l-emerald-500"
+                : isSell
+                ? "border-l-4 border-l-rose-500"
                 : "border-l-4 border-l-slate-600";
 
               const cardOpacity = !mStatus.isOpen ? "opacity-60 hover:opacity-100 transition-opacity" : "";
@@ -1269,8 +1236,8 @@ ${utcFormatted}`;
               const isNeutralSignal = item.recommendation.includes("NEUTRAL") || !item.targets?.entry || item.targets.entry === 0;
 
               return (
-                <div 
-                  key={sym} 
+                <div
+                  key={sym}
                   className={`bg-[#1E293B] border border-[#334155] rounded-xl p-5 shadow-md shadow-slate-950/40 transition-all duration-150 hover:brightness-105 active:scale-[0.98] flex flex-col justify-between ${borderAccent} ${cardOpacity} relative space-y-3 [box-shadow:inset_0_2px_4px_rgba(0,0,0,0.3)]`}
                 >
                   {/* TOP ROW: NAME | BADGE | RR */}
@@ -1339,9 +1306,9 @@ ${utcFormatted}`;
                         <span className="text-[11px] text-slate-400 font-medium ml-1 uppercase">CONFIDENCE</span>
                       </span>
                       <div className="w-28 sm:w-36 bg-[#0F172A] h-[4px] rounded-full overflow-hidden mt-1 border border-slate-700/50">
-                        <div 
+                        <div
                           className="bg-amber-400 h-full rounded-full transition-all duration-300"
-                          style={{ width: `${!mStatus.isOpen ? 0 : item.confidence}%` }} 
+                          style={{ width: `${!mStatus.isOpen ? 0 : item.confidence}%` }}
                         />
                       </div>
                     </div>
