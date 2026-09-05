@@ -190,7 +190,8 @@ def extract_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 def map_multi_timeframe(
     lower_df: pd.DataFrame,
     macro_1h_df: pd.DataFrame,
-    macro_4h_df: pd.DataFrame
+    macro_4h_df: pd.DataFrame,
+    macro_1d_df: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Safely joins higher timeframe macro directions (e.g. Trend EMAs and Momentum)
@@ -208,6 +209,12 @@ def map_multi_timeframe(
     ema_20_4h = macro_4h_df["close"].ewm(span=20, adjust=False).mean()
     ema_50_4h = macro_4h_df["close"].ewm(span=50, adjust=False).mean()
     m2_state["macro_4h_trend"] = np.where(ema_20_4h > ema_50_4h, 1.0, -1.0)
+    m3_state = pd.DataFrame(index=macro_1d_df.index)
+    ema_20_1d = macro_1d_df["close"].ewm(span=20, adjust=False).mean()
+    ema_50_1d = macro_1d_df["close"].ewm(span=50, adjust=False).mean()
+    m3_state["macro_1d_trend"] = np.where(ema_20_1d > ema_50_1d, 1.0, -1.0)
+    m3_state["macro_1d_rsi"] = compute_rsi(macro_1d_df, 14)
+
     
     # Align values back to timestamps.
     # To avoid look-ahead, we merge 'asof' based on the trade timestamp on local
@@ -217,6 +224,7 @@ def map_multi_timeframe(
     m1_state = m1_state.sort_index()
     m2_state = m2_state.sort_index()
     
+    m3_state = m3_state.sort_index()
     merged_df = pd.merge_asof(
         lower_df,
         m1_state,
@@ -232,4 +240,12 @@ def map_multi_timeframe(
         direction="backward"
     )
     
+    merged_df = pd.merge_asof(
+        merged_df,
+        m3_state,
+        left_index=True,
+        right_index=True,
+        direction="backward"
+    )
+
     return merged_df.fillna(0)

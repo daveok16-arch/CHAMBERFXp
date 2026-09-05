@@ -128,19 +128,17 @@ class MLEngine:
         self.model = None
         self.feature_scaler = FeatureScaler()
         
+        # Feature list mirrors exactly what feature_engineering emits (kept in sync
+        # so no column is silently zero-filled at inference).
         self.features = [
-            "rsi", "rsi_7", "rsi_smooth", "stoch_k", "stoch_d",
-            "cci", "momentum", "roc", "williams_r", "ultimate_osc",
-            "macd_line", "macd_signal", "macd_hist", "macd_crossover",
-            "adx", "plus_di", "minus_di", "di_crossover",
-            "supertrend_dir", "trend_strength",
-            "ema_ratio_8_21", "ema_ratio_21_50", "ema_cross_50_200",
-            "atr_pct", "atr_ratio", "bb_width", "bb_position", "kc_position",
-            "volume_ratio", "volume_zscore", "force_index", "money_flow",
-            "macro_1h_trend", "macro_1h_rsi", "macro_4h_trend", "macro_4h_rsi",
-            "mtf_bull_score", "mtf_rsi_confluence",
+            "rsi", "macd_line", "macd_signal", "macd_hist", "adx",
+            "ema_20", "ema_50", "bb_width",
+            "rolling_std", "rolling_skew", "rolling_kurt",
+            "vwap_ratio", "volume_roc", "volume_climax",
+            "dist_support", "dist_resistance",
+            "macro_1h_trend", "macro_1h_rsi", "macro_4h_trend",
+            "macro_1d_trend", "macro_1d_rsi",
             "log_ret_lag_1", "log_ret_lag_2", "log_ret_lag_3", "log_ret_lag_5",
-            "rolling_std_20", "rolling_skew", "rolling_kurt",
         ]
         
         self.load_model()

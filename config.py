@@ -108,7 +108,7 @@ ML_CONFIG: Dict[str, Any] = {
     # Training
     "TRAIN_TEST_SPLIT": 0.8,
     "RETRAIN_INTERVAL_BARS": 300,    # More frequent retraining
-    "MIN_TRAINING_BARS": 1500,       # Reduced minimum
+    "MIN_TRAINING_BARS": 700,        # Realistic minimum: Binance public klines cap at 1000 bars/request
     "USE_WALK_FORWARD": True,        # NEW: Walk-forward validation
     
     # Ensemble Hyperparameters

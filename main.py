@@ -151,14 +151,19 @@ class TradingBot:
         # Generate signal
         action, reason = self.signal_generator.evaluate_signal(pred_dir, confidence, latest_features)
 
-        # Execute trade
-        if action != self.position_direction:
-            if self.active_position_id != -1:
-                self._close_position(current_price, action)
+        # Execute trade: HOLD means "stay put" so a position is never
+        # opened-and-flat-closed on consecutive ticks (only an opposite signal
+        # closes it — matching the R-multiple hold strategy).
+        if action == "HOLD":
+            return action, reason
 
-            if action in ["BUY", "SELL"]:
-                self._open_position(action, current_price, confidence)
-                self.daily_trade_count += 1
+        if action != self.position_direction:
+
+            if self.active_position_id != -1:
+                self._close_position(current_price, "REVERSAL")
+
+            self._open_position(action, current_price, confidence)
+            self.daily_trade_count += 1
 
         self.bars_since_retrain += 1
 
@@ -337,6 +342,13 @@ class TradingBot:
             logger.info("Shutdown requested...")
         finally:
             self.ingestor.shutdown()
+
+            if self.active_position_id != -1:
+                with self.ingestor.lock:
+                    last_price = self.ingestor.live_ticker["price"]
+                self._close_position(last_price if last_price > 0 else 65000.0, "SESSION_END")
+                logger.info("Open position closed at session end")
+
             logger.info(f"Session ended. Final equity: ${self.equity:.2f}")
 
 
