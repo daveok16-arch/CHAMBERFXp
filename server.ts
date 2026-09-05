@@ -11,6 +11,13 @@ import {
   computeRsiArray, computeMacdArray, computeEmaArray,
   computeBollingerBandsWidthArray, computeAtrArray, computeAdxArray
 } from "./src/utils/indicators";
+import {
+  getSignals, getActiveSignals, replaceSignals, upsertSignal, clearSignals, pruneOldSignals,
+} from "./server/signalStore";
+import { startSignalReconciler } from "./server/signalReconciler";
+import {
+  requestId, requireAdmin, healthInfo, fetchWithTimeout, ADMIN_TOKEN,
+} from "./server/hardening";
 
 dotenv.config();
 
@@ -30,6 +37,7 @@ const aiClient = process.env.GEMINI_API_KEY
   : null;
 
 app.use(express.json());
+app.use(requestId);
 
 // Buffer to store active running python CLI session logs
 let activePythonProcess: any = null;
@@ -106,49 +114,38 @@ app.get("/api/python/logs", (req, res) => {
   }
 });
 
-// Shared live signals store
-let liveSignalStore: any[] = [];
+// Durable, server-authoritative signal store (survives restarts).
+// GET returns persisted signals; POST is an idempotent upsert (kept for
+// client compatibility) but the background reconciler is the source of truth.
 
-function deduplicateServerSignals(list: any[]): any[] {
-  const seen = new Set<string>();
-  const deduplicated: any[] = [];
-  for (const sig of list) {
-    if (!sig || !sig.id) continue;
-    const minuteKey = `${sig.symbol}-${sig.direction}-${(sig.fireTimestamp || sig.timestamp || "").substring(0, 16)}`;
-    if (seen.has(sig.id) || seen.has(minuteKey)) {
-      continue;
-    }
-    seen.add(sig.id);
-    seen.add(minuteKey);
-    deduplicated.push(sig);
-  }
-  return deduplicated;
-}
-
-// API: Get live signals
-app.get("/api/signals", (req, res) => {
-  res.json({ signals: liveSignalStore });
+// API: Health / readiness
+app.get("/api/health", (req, res) => {
+  res.json(healthInfo());
 });
 
-// API: Sync or update live signals in server store
-app.post("/api/signals", (req, res) => {
+// API: Get live signals (durable store)
+app.get("/api/signals", (req, res) => {
+  res.json({ signals: getSignals() });
+});
+
+// API: Upsert signals (idempotent; client compatibility path)
+app.post("/api/signals", requireAdmin, (req, res) => {
   const { signals: incomingSignals, signal: incomingSignal } = req.body;
   if (Array.isArray(incomingSignals)) {
-    liveSignalStore = deduplicateServerSignals(incomingSignals);
-  } else if (incomingSignal && incomingSignal.id) {
-    const idx = liveSignalStore.findIndex((s) => s.id === incomingSignal.id);
-    if (idx >= 0) {
-      liveSignalStore[idx] = { ...liveSignalStore[idx], ...incomingSignal };
-    } else {
-      liveSignalStore.unshift(incomingSignal);
-    }
-    liveSignalStore = deduplicateServerSignals(liveSignalStore);
+    const count = replaceSignals(incomingSignals);
+    res.json({ success: true, count });
+    return;
   }
-  res.json({ success: true, count: liveSignalStore.length });
+  if (incomingSignal && incomingSignal.id) {
+    upsertSignal(incomingSignal);
+    res.json({ success: true, count: getSignals().length });
+    return;
+  }
+  res.status(400).json({ error: "No signals payload" });
 });
 
-app.delete("/api/signals", (req, res) => {
-  liveSignalStore = [];
+app.delete("/api/signals", requireAdmin, (req, res) => {
+  clearSignals();
   res.json({ success: true, count: 0 });
 });
 
@@ -160,7 +157,7 @@ app.get("/api/python/status", (req, res) => {
   });
 });
 
-app.post("/api/python/run", (req, res) => {
+app.post("/api/python/run", requireAdmin, (req, res) => {
   if (activePythonProcess) {
     return res.json({ message: "Python signal bot is already executing.", success: true });
   }
@@ -195,7 +192,7 @@ app.post("/api/python/run", (req, res) => {
   }
 });
 
-app.post("/api/python/stop", (req, res) => {
+app.post("/api/python/stop", requireAdmin, (req, res) => {
   if (!activePythonProcess) {
     return res.json({ message: "No active processes found.", success: false });
   }
@@ -1439,10 +1436,42 @@ async function bootstrap() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  // Start the server-authoritative signal reconciler (scans assets, persists signals).
+  const reconciler = startSignalReconciler(async (symbol) => {
+    try {
+      const scan = await getAssetTechnicalScan(symbol);
+      return {
+        symbol: scan.symbol,
+        price: scan.price,
+        changePct: scan.changePct,
+        recommendation: scan.recommendation,
+        confidence: scan.confidence,
+        rsi: scan.rsi,
+        atr: scan.atr,
+        ema20: scan.ema20,
+        ema50: scan.ema50,
+        marketStatus: scan.marketStatus,
+        isStale: scan.isStale,
+        staleReason: scan.staleReason,
+        dataSource: scan.dataSource,
+      };
+    } catch {
+      return null;
+    }
+  }, 30000);
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`⚡ Express Server booted on port ${PORT}`);
     console.log(`[server] Express server successfully initialized on port ${PORT}`);
+    console.log(`[server] Signal reconciler started (30s interval).`);
   });
+
+  const shutdown = () => {
+    reconciler.stop();
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 bootstrap().catch((err) => {

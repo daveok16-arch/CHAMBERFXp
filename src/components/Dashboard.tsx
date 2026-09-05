@@ -512,6 +512,29 @@ ${utcFormatted}`;
       .catch(() => {});
   }, []);
 
+  // Poll the server-authoritative signal store so this view stays in sync
+  // across tabs/clients (server is the source of truth; local edits still work).
+  useEffect(() => {
+    const pollServerSignals = () => {
+      fetch("/api/signals")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && Array.isArray(data.signals) && data.signals.length > 0) {
+            setSignals((prev) => {
+              const merged = data.signals.map((remote: AuditedSignalItem) => {
+                const existing = prev.find((l) => l.id === remote.id);
+                return existing ? { ...remote, ...existing } : remote;
+              });
+              return merged;
+            });
+          }
+        })
+        .catch(() => {});
+    };
+    const t = setInterval(pollServerSignals, 15000);
+    return () => clearInterval(t);
+  }, []);
+
   // Synchronize Live Signals and Audit Log Engine in real-time
   useEffect(() => {
     if (!marketScans || marketScans.length === 0) return;

@@ -23,8 +23,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // server.ts
 var import_express = __toESM(require("express"), 1);
-var import_path = __toESM(require("path"), 1);
-var import_fs = __toESM(require("fs"), 1);
+var import_path2 = __toESM(require("path"), 1);
+var import_fs2 = __toESM(require("fs"), 1);
 var import_child_process = require("child_process");
 var import_vite = require("vite");
 var import_dotenv = __toESM(require("dotenv"), 1);
@@ -232,6 +232,53 @@ function getMarketStatus(symbol, date = /* @__PURE__ */ new Date()) {
     badgeColor: "emerald"
   };
 }
+function calculateMarketAwareAge(symbol, fireTime, nowTime = /* @__PURE__ */ new Date()) {
+  const fireDate = new Date(fireTime);
+  const now = new Date(nowTime);
+  const cleanSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const isCrypto = cleanSym.includes("BTC") || cleanSym.includes("ETH") || cleanSym.includes("SOL");
+  const totalMs = Math.max(0, now.getTime() - fireDate.getTime());
+  const totalSeconds = Math.floor(totalMs / 1e3);
+  if (isCrypto) {
+    return {
+      totalSeconds,
+      activeTradingSeconds: totalSeconds,
+      formattedAge: formatAgeString(totalSeconds),
+      wasPausedForWeekend: false
+    };
+  }
+  let activeMs = 0;
+  let curr = new Date(fireDate.getTime());
+  const stepMs = 15 * 60 * 1e3;
+  while (curr.getTime() < now.getTime()) {
+    const nextStep = new Date(Math.min(now.getTime(), curr.getTime() + stepMs));
+    const midPoint = new Date(curr.getTime() + (nextStep.getTime() - curr.getTime()) / 2);
+    const status = getMarketStatus(symbol, midPoint);
+    if (status.isOpen) {
+      activeMs += nextStep.getTime() - curr.getTime();
+    }
+    curr = nextStep;
+  }
+  const activeTradingSeconds = Math.floor(activeMs / 1e3);
+  const wasPausedForWeekend = totalSeconds - activeTradingSeconds > 3600;
+  return {
+    totalSeconds,
+    activeTradingSeconds,
+    formattedAge: formatAgeString(activeTradingSeconds),
+    wasPausedForWeekend
+  };
+}
+function formatAgeString(seconds) {
+  if (seconds < 60) return `${seconds}s ago`;
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return `${mins}m ${seconds % 60}s ago`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return `${hours}h ${remMins}m ago`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return `${days}d ${remHours}h ago`;
+}
 
 // src/utils/indicators.ts
 function computeRsiArray(prices, period) {
@@ -355,6 +402,437 @@ function computeAdxArray(highs, lows, closes, period) {
   return adx;
 }
 
+// server/signalStore.ts
+var import_fs = __toESM(require("fs"), 1);
+var import_path = __toESM(require("path"), 1);
+var DATA_DIR = import_path.default.join(process.cwd(), "data");
+var STORE_FILE = import_path.default.join(DATA_DIR, "signals.json");
+var cache = null;
+function ensureDir() {
+  if (!import_fs.default.existsSync(DATA_DIR)) import_fs.default.mkdirSync(DATA_DIR, { recursive: true });
+}
+function load() {
+  if (cache) return cache;
+  ensureDir();
+  try {
+    if (import_fs.default.existsSync(STORE_FILE)) {
+      const raw = import_fs.default.readFileSync(STORE_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) cache = parsed;
+    }
+  } catch (e) {
+    console.error("[signalStore] failed to load signals.json:", e);
+  }
+  if (!cache) cache = [];
+  return cache;
+}
+function persist() {
+  ensureDir();
+  const tmp = STORE_FILE + ".tmp";
+  import_fs.default.writeFileSync(tmp, JSON.stringify(cache ?? [], null, 2));
+  import_fs.default.renameSync(tmp, STORE_FILE);
+}
+function getSignals() {
+  return load();
+}
+function replaceSignals(signals) {
+  cache = signals;
+  persist();
+  return cache.length;
+}
+function upsertSignal(signal) {
+  const list = load();
+  const idx = list.findIndex((s) => s.id === signal.id);
+  if (idx >= 0) list[idx] = { ...list[idx], ...signal };
+  else list.unshift(signal);
+  cache = list;
+  persist();
+}
+function clearSignals() {
+  cache = [];
+  persist();
+}
+function pruneOldSignals(maxAgeDays = 30) {
+  const list = load();
+  const cutoff = Date.now() - maxAgeDays * 864e5;
+  const kept = list.filter((s) => {
+    const t = new Date(s.createdAt || s.fireTimestamp || s.timestamp).getTime();
+    return !isNaN(t) && t >= cutoff;
+  });
+  const removed = list.length - kept.length;
+  if (removed > 0) {
+    cache = kept;
+    persist();
+  }
+  return removed;
+}
+
+// server/signalEngine.ts
+var pairStateMap = {};
+function getPairState(symbol) {
+  if (!pairStateMap[symbol]) {
+    pairStateMap[symbol] = {
+      symbol,
+      state: "IDLE",
+      consecutiveLosses: 0,
+      hourlyTimestamps: []
+    };
+  }
+  const info = pairStateMap[symbol];
+  const now = Date.now();
+  if (info.lockUntil && info.lockUntil > now) {
+    info.state = "LOCKED";
+    info.reason = `Auto-locked until ${new Date(info.lockUntil).toLocaleTimeString()} (Spam prevention)`;
+    return info;
+  } else if (info.lockUntil && info.lockUntil <= now) {
+    info.lockUntil = void 0;
+  }
+  if (info.cooldownUntil && info.cooldownUntil > now) {
+    info.state = "COOLDOWN";
+    const remMins = Math.ceil((info.cooldownUntil - now) / 6e4);
+    info.reason = `Cooling down (${remMins}m remaining)`;
+    return info;
+  } else if (info.cooldownUntil && info.cooldownUntil <= now) {
+    info.cooldownUntil = void 0;
+  }
+  if (info.state !== "ACTIVE") {
+    info.state = "IDLE";
+    info.reason = void 0;
+  }
+  return info;
+}
+function updatePairOnSignalClosed(symbol, result) {
+  const info = getPairState(symbol);
+  const now = Date.now();
+  info.activeSignalId = void 0;
+  if (result === "HIT TP") {
+    info.consecutiveLosses = 0;
+    info.cooldownUntil = now + 36e5;
+    info.state = "COOLDOWN";
+    info.reason = "Cooling down 1h after WIN";
+  } else if (result === "HIT SL") {
+    info.consecutiveLosses = (info.consecutiveLosses || 0) + 1;
+    info.cooldownUntil = now + 72e5;
+    info.state = "COOLDOWN";
+    info.reason = `Cooling down 2h after LOSS (${info.consecutiveLosses} consecutive loss)`;
+  } else if (result === "EXPIRED") {
+    info.consecutiveLosses = 0;
+    info.cooldownUntil = now + 3e5;
+    info.state = "COOLDOWN";
+    info.reason = "Cooling down 5min after price drift expired signal";
+  }
+}
+function canGenerateNewSignal(symbol) {
+  const info = getPairState(symbol);
+  const now = Date.now();
+  if (info.state === "ACTIVE") return { allowed: false, reason: "Active signal already exists" };
+  if (info.state === "LOCKED") return { allowed: false, reason: info.reason || "Pair is locked" };
+  if (info.state === "COOLDOWN") return { allowed: false, reason: info.reason || "Pair in cooldown" };
+  const recent = info.hourlyTimestamps.filter((t) => now - t < 36e5);
+  info.hourlyTimestamps = recent;
+  if (recent.length >= 2) {
+    info.lockUntil = now + 144e5;
+    info.state = "LOCKED";
+    info.reason = "Spam frequency threshold exceeded (>2/hr). Auto-locked 4 hours.";
+    return { allowed: false, reason: info.reason };
+  }
+  return { allowed: true };
+}
+function recordSignalGenerated(symbol, signalId) {
+  const info = getPairState(symbol);
+  info.state = "ACTIVE";
+  info.activeSignalId = signalId;
+  info.hourlyTimestamps.push(Date.now());
+}
+function calculateSanitizedPipsOrPoints(symbol, entryPrice, exitPrice, direction) {
+  const isBuy = direction === "BUY";
+  const priceDiff = isBuy ? exitPrice - entryPrice : entryPrice - exitPrice;
+  const pnlPct = priceDiff / entryPrice * 100;
+  const isCryptoOrGold = /BTC|XAU|ETH|SOL/.test(symbol);
+  const isJpy = symbol.includes("JPY");
+  let pipsOrPoints = 0;
+  if (isCryptoOrGold) {
+    pipsOrPoints = Math.max(-5e3, Math.min(5e3, priceDiff));
+  } else {
+    const multiplier = isJpy ? 100 : 1e4;
+    pipsOrPoints = Math.max(-500, Math.min(500, priceDiff * multiplier));
+  }
+  return {
+    pipsOrPoints: parseFloat(pipsOrPoints.toFixed(1)),
+    pnlPct: parseFloat(pnlPct.toFixed(2))
+  };
+}
+function deduplicateSignals(signals) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const sig of signals) {
+    if (!sig || !sig.id) continue;
+    const minuteKey = `${sig.symbol}-${sig.direction}-${(sig.fireTimestamp || sig.timestamp || "").substring(0, 16)}`;
+    if (seen.has(sig.id) || seen.has(minuteKey)) continue;
+    seen.add(sig.id);
+    seen.add(minuteKey);
+    result.push(sig);
+  }
+  return result;
+}
+function reconcileSignals(prev, scans) {
+  let updated = deduplicateSignals([...prev]);
+  let generated = 0;
+  let expired = 0;
+  let closed = 0;
+  for (const item of scans) {
+    if (!item.recommendation || item.recommendation === "NEUTRAL" || item.recommendation === "CLOSED") {
+      continue;
+    }
+    const sym = item.symbol;
+    const livePrice = item.price;
+    const baseSym = sym.endsWith("m") ? sym.slice(0, -1) : sym;
+    let existingIdx = updated.findIndex((s) => s.symbol === sym && (s.status === "ACTIVE" || !s.status));
+    if (existingIdx !== -1) {
+      const existingSig = updated[existingIdx];
+      const priceDrift = Math.abs(livePrice - existingSig.entryPrice);
+      let driftThreshold = 0;
+      if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) driftThreshold = livePrice * 1e-3;
+      else if (baseSym === "XAUUSD") driftThreshold = 5;
+      else driftThreshold = baseSym.includes("JPY") ? 0.03 : 3e-4;
+      const hasOppositeSignal = existingSig.direction === "BUY" && item.recommendation.includes("SELL") || existingSig.direction === "SELL" && item.recommendation.includes("BUY");
+      if (priceDrift > driftThreshold || hasOppositeSignal) {
+        const { pipsOrPoints, pnlPct } = calculateSanitizedPipsOrPoints(sym, existingSig.entryPrice, livePrice, existingSig.direction);
+        updated[existingIdx] = {
+          ...existingSig,
+          result: "EXPIRED",
+          status: "EXPIRED",
+          resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          pipsOrPoints,
+          pnlPct
+        };
+        updated.splice(existingIdx, 1);
+        expired++;
+      }
+    }
+    const currentIdx = updated.findIndex((s) => s.symbol === sym && (s.status === "ACTIVE" || !s.status));
+    if (currentIdx === -1) {
+      const check = canGenerateNewSignal(sym);
+      if (check.allowed) {
+        const isBuy = item.recommendation.includes("BUY");
+        const dir = isBuy ? "BUY" : "SELL";
+        const entryPrice = livePrice;
+        const isCrypto = ["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym);
+        const isGold = baseSym === "XAUUSD";
+        let atrVal = item.atr;
+        if (!atrVal || atrVal <= 0) {
+          if (isCrypto) atrVal = livePrice * 0.01;
+          else if (isGold) atrVal = 15;
+          else if (baseSym.includes("JPY")) atrVal = 0.4;
+          else atrVal = 2e-3;
+        }
+        const rrProfile = getAssetRRProfile(sym);
+        const tpMultiplier = rrProfile.tpMultiplier || 2;
+        const tpOffset = tpMultiplier * atrVal;
+        const slOffset = 1 * atrVal;
+        const tpPrice = isBuy ? entryPrice + tpOffset : entryPrice - tpOffset;
+        const slPrice = isBuy ? entryPrice - slOffset : entryPrice + slOffset;
+        const now = /* @__PURE__ */ new Date();
+        const utcTime = now.toISOString().replace("T", " ").substring(0, 19) + " UTC";
+        const nowIso = now.toISOString();
+        const month = nowIso.substring(0, 7);
+        const rr = Math.abs(tpPrice - entryPrice) / (Math.abs(entryPrice - slPrice) || 1);
+        const sigId = `SIG-${sym.replace("m", "")}-${now.getTime().toString().slice(-5)}`;
+        const newSig = {
+          id: sigId,
+          timestamp: utcTime,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          resolvedAt: null,
+          resultPips: null,
+          month,
+          symbol: sym,
+          direction: dir,
+          entryPrice: parseFloat(entryPrice.toFixed(5)),
+          tpPrice: parseFloat(tpPrice.toFixed(5)),
+          slPrice: parseFloat(slPrice.toFixed(5)),
+          result: "ACTIVE",
+          status: "ACTIVE",
+          pipsOrPoints: 0,
+          pnlPct: 0,
+          rrAchieved: parseFloat(rr.toFixed(2)),
+          priceAtFire: parseFloat(livePrice.toFixed(5)),
+          fireTimestamp: utcTime,
+          confidence: item.confidence
+        };
+        recordSignalGenerated(sym, sigId);
+        updated.unshift(newSig);
+        generated++;
+      }
+    } else {
+      const currentSig = updated[currentIdx];
+      const sigDir = currentSig.direction;
+      let newStatus = "ACTIVE";
+      let exitPrice;
+      const tpDistance = Math.abs(currentSig.tpPrice - currentSig.entryPrice);
+      const currentDistance = sigDir === "BUY" ? livePrice - currentSig.entryPrice : currentSig.entryPrice - livePrice;
+      const progressPct = tpDistance > 0 ? Math.max(0, currentDistance / tpDistance * 100) : 0;
+      if (sigDir === "BUY" && livePrice >= currentSig.tpPrice || sigDir === "SELL" && livePrice <= currentSig.tpPrice) {
+        newStatus = "HIT TP";
+        exitPrice = currentSig.tpPrice;
+      } else if (progressPct >= 50) {
+        const trailingStop = sigDir === "BUY" ? currentSig.entryPrice + tpDistance * 0.5 : currentSig.entryPrice - tpDistance * 0.5;
+        if (sigDir === "BUY" && livePrice <= trailingStop || sigDir === "SELL" && livePrice >= trailingStop) {
+          newStatus = "HIT SL";
+          exitPrice = trailingStop;
+        }
+      } else if (sigDir === "BUY" && livePrice <= currentSig.slPrice || sigDir === "SELL" && livePrice >= currentSig.slPrice) {
+        newStatus = "HIT SL";
+        exitPrice = currentSig.slPrice;
+      } else {
+        const birth = new Date(currentSig.createdAt || currentSig.fireTimestamp || currentSig.timestamp).getTime();
+        const marketAge = calculateMarketAwareAge(baseSym, birth, /* @__PURE__ */ new Date());
+        const ageHours = marketAge.activeTradingSeconds / 3600;
+        const isStaleByTime = ageHours > 24;
+        const isLostMomentum4h = ageHours >= 4 && progressPct < 25;
+        const isLostMomentum8h = ageHours >= 8 && progressPct < 40;
+        if (isStaleByTime || isLostMomentum4h || isLostMomentum8h) {
+          newStatus = "EXPIRED";
+          exitPrice = livePrice;
+        }
+      }
+      if (newStatus !== "ACTIVE" && newStatus !== currentSig.status) {
+        const { pipsOrPoints, pnlPct } = calculateSanitizedPipsOrPoints(sym, currentSig.entryPrice, exitPrice || livePrice, sigDir);
+        const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+        updated[currentIdx] = {
+          ...currentSig,
+          status: newStatus,
+          result: newStatus,
+          exitPrice,
+          pnlPct,
+          pipsOrPoints,
+          updatedAt: nowIso,
+          resolvedAt: nowIso,
+          resultPips: pipsOrPoints
+        };
+        if (newStatus === "HIT TP" || newStatus === "HIT SL") {
+          updatePairOnSignalClosed(sym, newStatus);
+        }
+        closed++;
+      }
+    }
+  }
+  return { signals: updated, generated, expired, closed };
+}
+function summarizeResult(r) {
+  return {
+    generated: r.generated,
+    expired: r.expired,
+    closed: r.closed,
+    totalActive: r.signals.filter((s) => s.status === "ACTIVE" || !s.status).length,
+    scanned: r.scanned,
+    ranAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+
+// server/signalReconciler.ts
+var ASSETS = [
+  "BTCUSD",
+  "ETHUSD",
+  "SOLUSD",
+  "XAUUSD",
+  "EURUSD",
+  "GBPUSD",
+  "USDJPY",
+  "AUDUSD",
+  "USDCAD",
+  "USDCHF",
+  "NZDUSD",
+  "EURGBP",
+  "EURJPY",
+  "GBPJPY",
+  "AUDJPY",
+  "EURAUD",
+  "GBPAUD",
+  "CADJPY",
+  "CHFJPY"
+];
+function startSignalReconciler(scanFn, intervalMs = 3e4) {
+  let running = false;
+  let lastResult = null;
+  let timer = null;
+  let stopped = false;
+  async function pass() {
+    if (running || stopped) return;
+    running = true;
+    try {
+      const results = await Promise.allSettled(ASSETS.map((sym) => scanFn(sym).catch(() => null)));
+      const scans = [];
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) scans.push(r.value);
+      }
+      const prev = getSignals();
+      const outcome = reconcileSignals(prev, scans);
+      const next = dedupeKeepNewest(outcome.signals);
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        replaceSignals(next);
+      }
+      pruneOldSignals(30);
+      lastResult = summarizeResult({ ...outcome, signals: next, scanned: scans.length });
+      const detail = lastResult;
+      if (detail.generated > 0 || detail.expired > 0 || detail.closed > 0) {
+        console.log(`[reconciler] scans=${detail.scanned} gen=${detail.generated} exp=${detail.expired} close=${detail.closed} active=${detail.totalActive}`);
+      }
+    } catch (e) {
+      console.error("[reconciler] pass failed:", e.message || e);
+    } finally {
+      running = false;
+    }
+  }
+  const initial = setTimeout(() => void pass(), 3e3);
+  timer = setInterval(() => void pass(), intervalMs);
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(initial);
+      if (timer) clearInterval(timer);
+    },
+    lastResult: () => lastResult
+  };
+}
+function dedupeKeepNewest(signals) {
+  const seen = /* @__PURE__ */ new Set();
+  return signals.filter((s) => {
+    if (!s || !s.id || seen.has(s.id)) return false;
+    seen.add(s.id);
+    return true;
+  });
+}
+
+// server/hardening.ts
+var import_crypto = __toESM(require("crypto"), 1);
+var ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+function requestId(req, res, next) {
+  const id = req.headers["x-request-id"] || import_crypto.default.randomBytes(6).toString("hex");
+  res.setHeader("x-request-id", id);
+  const start = Date.now();
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} ${ms}ms id=${id}`);
+  });
+  next();
+}
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) return next();
+  const token = req.headers["x-admin-token"] || req.query["token"];
+  if (token === ADMIN_TOKEN) return next();
+  res.status(401).json({ error: "Unauthorized" });
+}
+function healthInfo() {
+  return {
+    status: "ok",
+    uptimeSec: Math.round(process.uptime()),
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    node: process.version,
+    env: process.env.NODE_ENV || "development"
+  };
+}
+
 // server.ts
 import_dotenv.default.config();
 var app = (0, import_express.default)();
@@ -368,6 +846,7 @@ var aiClient = process.env.GEMINI_API_KEY ? new import_genai.GoogleGenAI({
   }
 }) : null;
 app.use(import_express.default.json());
+app.use(requestId);
 var activePythonProcess = null;
 var pythonLogsBuffer = ["[System] Console initialized. Ready to launch the Python Ingestion & ML Engine."];
 function runPythonQuery(queryString) {
@@ -400,10 +879,10 @@ app.get("/api/python/files", (req, res) => {
   ];
   try {
     const response = targetFiles.map((filename) => {
-      const fullPath = import_path.default.join(process.cwd(), filename);
+      const fullPath = import_path2.default.join(process.cwd(), filename);
       let content = "";
-      if (import_fs.default.existsSync(fullPath)) {
-        content = import_fs.default.readFileSync(fullPath, "utf-8");
+      if (import_fs2.default.existsSync(fullPath)) {
+        content = import_fs2.default.readFileSync(fullPath, "utf-8");
       } else {
         content = `# File ${filename} is missing or not generated yet.`;
       }
@@ -415,11 +894,11 @@ app.get("/api/python/files", (req, res) => {
   }
 });
 app.get("/api/python/logs", (req, res) => {
-  const logPath = import_path.default.join(process.cwd(), "app.log");
+  const logPath = import_path2.default.join(process.cwd(), "app.log");
   try {
     let logs = "";
-    if (import_fs.default.existsSync(logPath)) {
-      logs = import_fs.default.readFileSync(logPath, "utf-8");
+    if (import_fs2.default.existsSync(logPath)) {
+      logs = import_fs2.default.readFileSync(logPath, "utf-8");
     } else {
       logs = "[System] app.log database output is empty. Start the agent or run a script.";
     }
@@ -428,42 +907,28 @@ app.get("/api/python/logs", (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-var liveSignalStore = [];
-function deduplicateServerSignals(list) {
-  const seen = /* @__PURE__ */ new Set();
-  const deduplicated = [];
-  for (const sig of list) {
-    if (!sig || !sig.id) continue;
-    const minuteKey = `${sig.symbol}-${sig.direction}-${(sig.fireTimestamp || sig.timestamp || "").substring(0, 16)}`;
-    if (seen.has(sig.id) || seen.has(minuteKey)) {
-      continue;
-    }
-    seen.add(sig.id);
-    seen.add(minuteKey);
-    deduplicated.push(sig);
-  }
-  return deduplicated;
-}
-app.get("/api/signals", (req, res) => {
-  res.json({ signals: liveSignalStore });
+app.get("/api/health", (req, res) => {
+  res.json(healthInfo());
 });
-app.post("/api/signals", (req, res) => {
+app.get("/api/signals", (req, res) => {
+  res.json({ signals: getSignals() });
+});
+app.post("/api/signals", requireAdmin, (req, res) => {
   const { signals: incomingSignals, signal: incomingSignal } = req.body;
   if (Array.isArray(incomingSignals)) {
-    liveSignalStore = deduplicateServerSignals(incomingSignals);
-  } else if (incomingSignal && incomingSignal.id) {
-    const idx = liveSignalStore.findIndex((s) => s.id === incomingSignal.id);
-    if (idx >= 0) {
-      liveSignalStore[idx] = { ...liveSignalStore[idx], ...incomingSignal };
-    } else {
-      liveSignalStore.unshift(incomingSignal);
-    }
-    liveSignalStore = deduplicateServerSignals(liveSignalStore);
+    const count = replaceSignals(incomingSignals);
+    res.json({ success: true, count });
+    return;
   }
-  res.json({ success: true, count: liveSignalStore.length });
+  if (incomingSignal && incomingSignal.id) {
+    upsertSignal(incomingSignal);
+    res.json({ success: true, count: getSignals().length });
+    return;
+  }
+  res.status(400).json({ error: "No signals payload" });
 });
-app.delete("/api/signals", (req, res) => {
-  liveSignalStore = [];
+app.delete("/api/signals", requireAdmin, (req, res) => {
+  clearSignals();
   res.json({ success: true, count: 0 });
 });
 app.get("/api/python/status", (req, res) => {
@@ -473,7 +938,7 @@ app.get("/api/python/status", (req, res) => {
     // Return last 150 entries
   });
 });
-app.post("/api/python/run", (req, res) => {
+app.post("/api/python/run", requireAdmin, (req, res) => {
   if (activePythonProcess) {
     return res.json({ message: "Python signal bot is already executing.", success: true });
   }
@@ -502,7 +967,7 @@ app.post("/api/python/run", (req, res) => {
     res.status(500).json({ error: err.message, success: false });
   }
 });
-app.post("/api/python/stop", (req, res) => {
+app.post("/api/python/stop", requireAdmin, (req, res) => {
   if (!activePythonProcess) {
     return res.json({ message: "No active processes found.", success: false });
   }
@@ -1544,16 +2009,45 @@ async function bootstrap() {
     app.use(vite.middlewares);
     console.log("[server] Mounted Vite engine inside Dev Server instance.");
   } else {
-    const distPath = import_path.default.join(process.cwd(), "dist");
+    const distPath = import_path2.default.join(process.cwd(), "dist");
     app.use(import_express.default.static(distPath));
     app.get("*all", (req, res) => {
-      res.sendFile(import_path.default.join(distPath, "index.html"));
+      res.sendFile(import_path2.default.join(distPath, "index.html"));
     });
   }
-  app.listen(PORT, "0.0.0.0", () => {
+  const reconciler = startSignalReconciler(async (symbol) => {
+    try {
+      const scan = await getAssetTechnicalScan(symbol);
+      return {
+        symbol: scan.symbol,
+        price: scan.price,
+        changePct: scan.changePct,
+        recommendation: scan.recommendation,
+        confidence: scan.confidence,
+        rsi: scan.rsi,
+        atr: scan.atr,
+        ema20: scan.ema20,
+        ema50: scan.ema50,
+        marketStatus: scan.marketStatus,
+        isStale: scan.isStale,
+        staleReason: scan.staleReason,
+        dataSource: scan.dataSource
+      };
+    } catch {
+      return null;
+    }
+  }, 3e4);
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`\u26A1 Express Server booted on port ${PORT}`);
     console.log(`[server] Express server successfully initialized on port ${PORT}`);
+    console.log(`[server] Signal reconciler started (30s interval).`);
   });
+  const shutdown = () => {
+    reconciler.stop();
+    server.close(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 bootstrap().catch((err) => {
   console.error("Express startup check crash:", err);
