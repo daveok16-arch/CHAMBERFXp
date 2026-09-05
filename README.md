@@ -1,20 +1,57 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# CHAMBERFX — Institutional Quantitative Signal Terminal
 
-# Run and deploy your AI Studio app
+Institutional-style trading dashboard: React SPA + Node/Express API + Python
+ML engine (data ingestion, feature engineering, ensemble model, backtesting).
 
-This contains everything you need to run your app locally.
+## Architecture
 
-View your app in AI Studio: https://ai.studio/apps/a05de669-522c-48e2-a32f-fffcbc906b85
+- **Web + API** (`server.ts`, `server/`) — Express server, server-authoritative
+  signal engine, durable store (JSON file or Postgres), SSE live push, Prometheus
+  metrics, admin-token auth. The Python engine is auto-spawned on the same
+  instance via `server/engineSpawner.ts`.
+- **Python engine** (`engine/`) — stdlib HTTP service (`engine/server.py`) with
+  `/predict`, `/train`, `/backtest`, `/worker/*`, model registry, job queue, and
+  a supervised worker.
+- **Frontend** (`src/`) — React terminal UI with KPI strip, live signal feed,
+  SSE updates, analysis drawers.
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
+**Prerequisites:** Node.js 20+, Python 3 + `pip install -r requirements.txt`
 
+1. `npm install`
+2. `pip3 install -r requirements.txt`
+3. Optional: set `GEMINI_API_KEY` / `ADMIN_TOKEN` in `.env` (see `.env.example`)
+4. `npm run dev`  (Node auto-spawns the engine on :8800)
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Test / Lint / Build
+
+```bash
+npm test        # TS + Python unit tests
+npm run lint    # tsc --noEmit
+npm run build   # vite + esbuild -> dist/server.cjs
+```
+
+## Deploy on Render
+
+The repo ships `render.yaml` (single web service). On deploy:
+
+1. **Push to GitHub** → create a Render service from this repo.
+2. Render runs `npm install && (pip3 install -r requirements.txt || true) && npm run build`
+   then `npm run start`.
+3. The Node process auto-spawns the Python engine on `ENGINE_PORT` (8800) and
+   proxies `/api/python/*` to it. No extra service needed on the free plan.
+4. Set env vars in Render dashboard:
+   - `GEMINI_API_KEY` (optional)
+   - `ADMIN_TOKEN` (optional — protects write endpoints; leave unset for local)
+   - `ENGINE_URL` / `ENGINE_PORT` (defaults to localhost:8800)
+5. Health check: `/api/health`. Metrics: `/metrics`. Readiness: `/api/ready`.
+
+The committed `dist/` bundle + `prestart` self-heal ensure `npm run start`
+works even if the platform skips the build step.
+
+## Docker (optional)
+
+```bash
+docker compose up --build   # api+engine+postgres+redis+prometheus+grafana
+```

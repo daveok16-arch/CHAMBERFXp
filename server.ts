@@ -20,6 +20,7 @@ import {
   requestId, requireAdmin, healthInfo, fetchWithTimeout, ADMIN_TOKEN,
 } from "./server/hardening";
 import { engineFetch, engineAlive, engineStatus } from "./server/engineProxy";
+import { startEngineIfNeeded, stopEngine } from "./server/engineSpawner";
 import { observeHttp, countSignalEvent, observeReconciler, observeEngineHealth, renderMetrics } from "./server/metrics";
 import { log } from "./server/logger";
 
@@ -1480,6 +1481,7 @@ app.post("/api/backtest", async (req, res) => {
 // -----------------------------------------------------------------------------
 async function bootstrap() {
   await initStore();
+  await startEngineIfNeeded();
 
   if (process.env.NODE_ENV !== "production") {
     // In development mode, mount Vite direct server middleware
@@ -1545,6 +1547,7 @@ async function bootstrap() {
 
   const shutdown = () => {
     reconciler.stop();
+    stopEngine();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);

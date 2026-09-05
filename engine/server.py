@@ -17,7 +17,11 @@ import engine.jobs as jobs
 from engine.model_registry import load_latest_model, latest_info
 from engine.worker import worker
 
-PORT = int(os.environ.get("ENGINE_PORT", "8800"))
+# Prefer ENGINE_PORT explicitly; fall back to PORT (Render injects it per
+# service) then 8800. The web service clears PORT for the engine child so it
+# never tries to bind the web port.
+_port_raw = (os.environ.get("ENGINE_PORT") or "").strip() or (os.environ.get("PORT") or "").strip() or "8800"
+PORT = int(_port_raw)
 
 
 def _predict(params: dict):
@@ -181,7 +185,22 @@ class EngineServer(ThreadingHTTPServer):
 
 
 def main():
-    server = EngineServer(("0.0.0.0", PORT), Handler)
+    # Retry bind briefly to tolerate transient EADDRINUSE (e.g. a just-closed
+    # probe socket in TIME_WAIT, or the parent's readiness check racing us).
+    delay = 0.25
+    server = None
+    for attempt in range(10):
+        try:
+            server = EngineServer(("0.0.0.0", PORT), Handler)
+            break
+        except OSError as e:
+            if "Address already in use" in str(e) and attempt < 9:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise
+    if server is None:
+        raise RuntimeError(f"unable to bind :{PORT}")
     print(f"[engine] listening on :{PORT}", flush=True)
     try:
         server.serve_forever()

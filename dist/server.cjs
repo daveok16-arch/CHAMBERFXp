@@ -25,7 +25,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_express = __toESM(require("express"), 1);
 var import_path2 = __toESM(require("path"), 1);
 var import_fs2 = __toESM(require("fs"), 1);
-var import_child_process = require("child_process");
+var import_child_process2 = require("child_process");
 var import_vite = require("vite");
 var import_dotenv = __toESM(require("dotenv"), 1);
 var import_genai = require("@google/genai");
@@ -941,6 +941,64 @@ async function engineStatus() {
   }
 }
 
+// server/engineSpawner.ts
+var import_child_process = require("child_process");
+var import_net = __toESM(require("net"), 1);
+var ENGINE_PORT = process.env.ENGINE_PORT || "8800";
+var ENGINE_URL = process.env.ENGINE_URL || `http://localhost:${ENGINE_PORT}`;
+var child = null;
+var started = false;
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = import_net.default.createServer();
+    srv.once("error", () => resolve(false));
+    srv.once("listening", () => srv.close(() => resolve(true)));
+    srv.listen(port, "127.0.0.1");
+  });
+}
+async function startEngineIfNeeded() {
+  if (started) return true;
+  started = true;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 1500);
+    const res = await fetch(`${ENGINE_URL}/health`, { signal: ctl.signal });
+    clearTimeout(t);
+    if (res.ok) {
+      console.log(`[engine] already reachable at ${ENGINE_URL}; not respawning`);
+      return true;
+    }
+  } catch {
+  }
+  if (!await portFree(Number(ENGINE_PORT))) {
+    console.log(`[engine] port ${ENGINE_PORT} busy; assuming engine running`);
+    return true;
+  }
+  console.log(`[engine] spawning engine/server.py on :${ENGINE_PORT}`);
+  const childEnv = { ...process.env, ENGINE_PORT, PORT: "", PYTHONUNBUFFERED: "1" };
+  child = (0, import_child_process.spawn)("python3", ["engine/server.py"], {
+    cwd: process.cwd(),
+    env: childEnv,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  child.stdout?.on("data", (d) => process.stdout.write(`[engine] ${d}`));
+  child.stderr?.on("data", (d) => process.stderr.write(`[engine] ${d}`));
+  child.on("exit", (code) => {
+    console.log(`[engine] engine service exited code=${code}`);
+    child = null;
+  });
+  return true;
+}
+function stopEngine() {
+  if (child && child.pid) {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+    }
+    child = null;
+  }
+}
+
 // server/metrics.ts
 var registry = /* @__PURE__ */ new Map();
 function increment(name, help, labels = {}, by = 1) {
@@ -1035,7 +1093,7 @@ function runPythonQuery(queryString) {
   return new Promise((resolve, reject) => {
     const escapedQuery = queryString.replace(/'/g, "'\\''");
     const cmd = `python3 -c "${escapedQuery}"`;
-    (0, import_child_process.exec)(cmd, { cwd: process.cwd() }, (error, stdout, stderr) => {
+    (0, import_child_process2.exec)(cmd, { cwd: process.cwd() }, (error, stdout, stderr) => {
       if (error) {
         return reject(error.message || stderr);
       }
@@ -1158,7 +1216,7 @@ app.post("/api/python/run", requireAdmin, async (req, res) => {
   pythonLogsBuffer.push(`
 [System - ${(/* @__PURE__ */ new Date()).toISOString()}] Launching python3 main.py (legacy spawn) ...`);
   try {
-    activePythonProcess = (0, import_child_process.spawn)("python3", ["main.py"], {
+    activePythonProcess = (0, import_child_process2.spawn)("python3", ["main.py"], {
       cwd: process.cwd(),
       env: { ...process.env, PYTHONUNBUFFERED: "1" }
     });
@@ -2224,6 +2282,7 @@ app.post("/api/backtest", async (req, res) => {
 });
 async function bootstrap() {
   await initStore();
+  await startEngineIfNeeded();
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({
       server: { middlewareMode: true, allowedHosts: true },
@@ -2281,6 +2340,7 @@ async function bootstrap() {
   });
   const shutdown = () => {
     reconciler.stop();
+    stopEngine();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);

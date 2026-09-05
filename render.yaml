@@ -1,12 +1,22 @@
 services:
+  # Single web service: Node API + SPA, and the Python engine is spawned as a
+  # child process on the same instance (localhost) by server/engineSpawner.ts.
+  # This keeps the free plan to one service while still running the engine.
   - type: web
     name: ai-trading-signal-bot
     env: node
     plan: free
     buildCommand: npm install && (pip3 install -r requirements.txt || true) && npm run build
     startCommand: npm run start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: GEMINI_API_KEY
         sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: ENGINE_URL
+        value: http://localhost:8800
+      - key: ENGINE_PORT
+        value: "8800"
