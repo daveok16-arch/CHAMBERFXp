@@ -12,3 +12,6 @@ __pycache__/
 *.pyc
 trading_bot.db
 data/
+engine/models/model_*
+engine/models/latest
+engine/models/latest_metadata.json

@@ -18,6 +18,7 @@ import { startSignalReconciler } from "./server/signalReconciler";
 import {
   requestId, requireAdmin, healthInfo, fetchWithTimeout, ADMIN_TOKEN,
 } from "./server/hardening";
+import { engineFetch, engineAlive, engineStatus } from "./server/engineProxy";
 
 dotenv.config();
 
@@ -149,42 +150,49 @@ app.delete("/api/signals", requireAdmin, (req, res) => {
   res.json({ success: true, count: 0 });
 });
 
-// 3. Spawns / Terminates historical trading bot instances
-app.get("/api/python/status", (req, res) => {
-  res.json({
-    running: activePythonProcess !== null,
-    logs: pythonLogsBuffer.slice(-150) // Return last 150 entries
-  });
+// 3. Python engine bridge: proxies to the supervised engine service when
+// reachable; falls back to the legacy direct spawn otherwise.
+app.get("/api/python/status", async (req, res) => {
+  const st = await engineStatus();
+  if (st) {
+    res.json({ engine: true, ...st });
+    return;
+  }
+  res.json({ engine: false, running: activePythonProcess !== null, logs: pythonLogsBuffer.slice(-150) });
 });
 
-app.post("/api/python/run", requireAdmin, (req, res) => {
+app.post("/api/python/run", requireAdmin, async (req, res) => {
+  if (await engineAlive()) {
+    try {
+      const r = await engineFetch("/worker/start", { method: "POST" }, 5000);
+      const body = await r.json();
+      res.json({ engine: true, message: "Python bot started via engine worker.", ...body });
+      return;
+    } catch {
+      // fall through to legacy spawn
+    }
+  }
   if (activePythonProcess) {
     return res.json({ message: "Python signal bot is already executing.", success: true });
   }
-  
-  pythonLogsBuffer.push(`\n[System - ${new Date().toISOString()}] Launching python3 main.py ...`);
-  
+  pythonLogsBuffer.push(`\n[System - ${new Date().toISOString()}] Launching python3 main.py (legacy spawn) ...`);
   try {
     activePythonProcess = spawn("python3", ["main.py"], {
       cwd: process.cwd(),
       env: { ...process.env, PYTHONUNBUFFERED: "1" }
     });
-    
     activePythonProcess.stdout.on("data", (data: any) => {
       const line = data.toString().trim();
       if (line) pythonLogsBuffer.push(line);
     });
-    
     activePythonProcess.stderr.on("data", (data: any) => {
       const errLine = data.toString().trim();
       if (errLine) pythonLogsBuffer.push(`[stderr] ${errLine}`);
     });
-    
     activePythonProcess.on("close", (code: number) => {
       pythonLogsBuffer.push(`[System] Python trading process exited with code ${code}`);
       activePythonProcess = null;
     });
-    
     res.json({ message: "Python bot spawned in background successfully.", success: true });
   } catch (err: any) {
     pythonLogsBuffer.push(`[Critical System Error] Failed to launch: ${err.message}`);
@@ -192,11 +200,20 @@ app.post("/api/python/run", requireAdmin, (req, res) => {
   }
 });
 
-app.post("/api/python/stop", requireAdmin, (req, res) => {
+app.post("/api/python/stop", requireAdmin, async (req, res) => {
+  if (await engineAlive()) {
+    try {
+      const r = await engineFetch("/worker/stop", { method: "POST" }, 5000);
+      const body = await r.json();
+      res.json({ engine: true, message: "Python bot stopped via engine worker.", ...body });
+      return;
+    } catch {
+      // fall through to legacy
+    }
+  }
   if (!activePythonProcess) {
     return res.json({ message: "No active processes found.", success: false });
   }
-  
   try {
     activePythonProcess.kill("SIGINT");
     activePythonProcess = null;

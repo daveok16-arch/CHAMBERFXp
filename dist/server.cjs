@@ -833,6 +833,34 @@ function healthInfo() {
   };
 }
 
+// server/engineProxy.ts
+var ENGINE_BASE = process.env.ENGINE_URL || "http://localhost:8800";
+async function engineFetch(path3, init = {}, timeoutMs = 1e4) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(`${ENGINE_BASE}${path3}`, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function engineAlive() {
+  try {
+    const res = await engineFetch("/health", {}, 2500);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+async function engineStatus() {
+  try {
+    const res = await engineFetch("/status", {}, 3e3);
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  }
+}
+
 // server.ts
 import_dotenv.default.config();
 var app = (0, import_express.default)();
@@ -931,19 +959,29 @@ app.delete("/api/signals", requireAdmin, (req, res) => {
   clearSignals();
   res.json({ success: true, count: 0 });
 });
-app.get("/api/python/status", (req, res) => {
-  res.json({
-    running: activePythonProcess !== null,
-    logs: pythonLogsBuffer.slice(-150)
-    // Return last 150 entries
-  });
+app.get("/api/python/status", async (req, res) => {
+  const st = await engineStatus();
+  if (st) {
+    res.json({ engine: true, ...st });
+    return;
+  }
+  res.json({ engine: false, running: activePythonProcess !== null, logs: pythonLogsBuffer.slice(-150) });
 });
-app.post("/api/python/run", requireAdmin, (req, res) => {
+app.post("/api/python/run", requireAdmin, async (req, res) => {
+  if (await engineAlive()) {
+    try {
+      const r = await engineFetch("/worker/start", { method: "POST" }, 5e3);
+      const body = await r.json();
+      res.json({ engine: true, message: "Python bot started via engine worker.", ...body });
+      return;
+    } catch {
+    }
+  }
   if (activePythonProcess) {
     return res.json({ message: "Python signal bot is already executing.", success: true });
   }
   pythonLogsBuffer.push(`
-[System - ${(/* @__PURE__ */ new Date()).toISOString()}] Launching python3 main.py ...`);
+[System - ${(/* @__PURE__ */ new Date()).toISOString()}] Launching python3 main.py (legacy spawn) ...`);
   try {
     activePythonProcess = (0, import_child_process.spawn)("python3", ["main.py"], {
       cwd: process.cwd(),
@@ -967,7 +1005,16 @@ app.post("/api/python/run", requireAdmin, (req, res) => {
     res.status(500).json({ error: err.message, success: false });
   }
 });
-app.post("/api/python/stop", requireAdmin, (req, res) => {
+app.post("/api/python/stop", requireAdmin, async (req, res) => {
+  if (await engineAlive()) {
+    try {
+      const r = await engineFetch("/worker/stop", { method: "POST" }, 5e3);
+      const body = await r.json();
+      res.json({ engine: true, message: "Python bot stopped via engine worker.", ...body });
+      return;
+    } catch {
+    }
+  }
   if (!activePythonProcess) {
     return res.json({ message: "No active processes found.", success: false });
   }
