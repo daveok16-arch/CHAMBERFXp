@@ -701,6 +701,7 @@ ${utcFormatted}`;
           // Directional Commitment: Always use currentSig.direction (DO NOT FLIP)
           const currentSig = updated[existingIdx];
           const sigDir = currentSig.direction; // Strictly preserve committed direction!
+          const baseSym = sym.endsWith("m") ? sym.slice(0, -1) : sym;
           let newStatus: "ACTIVE" | "HIT TP" | "HIT SL" | "EXPIRED" = "ACTIVE";
           let exitPrice: number | undefined = undefined;
 
@@ -732,12 +733,16 @@ ${utcFormatted}`;
           // Check Time-based Expiry
           else {
             const birth = new Date(currentSig.createdAt || currentSig.fireTimestamp || currentSig.timestamp).getTime();
-            const ageHours = (Date.now() - birth) / 3600000;
+            // Market-aware age: count only *trading* seconds for FX/Gold so a
+            // signal opened Friday evening isn't expired during the weekend close.
+
+            const marketAge = calculateMarketAwareAge(baseSym, birth, new Date());
+            const ageHours = marketAge.activeTradingSeconds / 3600;
 
             // Professional timeout rules:
-            // 1. If 4+ hours and <25% progress toward TP, expire (signal lost momentum)
-            // 2. If 8+ hours and <40% progress toward TP, expire
-            // 3. Max 24 hours always
+            // 1. If 4+ trading hours and <25% progress toward TP, expire (signal lost momentum)
+            // 2. If 8+ trading hours and <40% progress toward TP, expire
+            // 3. Max 24 trading hours always
             const isStaleByTime = ageHours > 24;
             const isLostMomentum4h = ageHours >= 4 && progressPct < 25;
             const isLostMomentum8h = ageHours >= 8 && progressPct < 40;
@@ -1207,7 +1212,8 @@ ${utcFormatted}`;
                 : (cardActiveSig?.fireTimestamp
                   ? new Date(cardActiveSig.fireTimestamp).getTime()
                   : (item.lastUpdatedTimestamp || Date.now()));
-              const ageHours = (Date.now() - signalStartMs) / 3600000;
+              const marketAgeCard = calculateMarketAwareAge(baseSym, signalStartMs || Date.now(), new Date());
+              const ageHours = marketAgeCard.activeTradingSeconds / 3600;
               const isOver4Hours = ageHours > 4 && ageHours <= 24;
               const isExpired = ageHours > 24 || cardActiveSig?.status === "EXPIRED";
               const currentStatus = isExpired ? "EXPIRED" : (!mStatus.isOpen ? "CLOSED" : (staleInfo.isStale ? "RECALCULATING" : "ACTIVE"));
