@@ -233,6 +233,128 @@ function getMarketStatus(symbol, date = /* @__PURE__ */ new Date()) {
   };
 }
 
+// src/utils/indicators.ts
+function computeRsiArray(prices, period) {
+  const rsi = new Array(prices.length).fill(50);
+  if (prices.length < period) return rsi;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = prices[i] - prices[i - 1];
+    if (diff > 0) {
+      gains += diff;
+    } else {
+      losses -= diff;
+    }
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for (let i = period + 1; i < prices.length; i++) {
+    const diff = prices[i] - prices[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
+    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return rsi;
+}
+function computeMacdArray(prices, fast, slow, signal) {
+  const macdLine = new Array(prices.length).fill(0);
+  const signalLine = new Array(prices.length).fill(0);
+  const macdHists = new Array(prices.length).fill(0);
+  const emaFast = computeEmaArray(prices, fast);
+  const emaSlow = computeEmaArray(prices, slow);
+  for (let i = 0; i < prices.length; i++) {
+    macdLine[i] = emaFast[i] - emaSlow[i];
+  }
+  const sigEma = computeEmaArray(macdLine, signal);
+  for (let i = 0; i < prices.length; i++) {
+    signalLine[i] = sigEma[i];
+    macdHists[i] = macdLine[i] - signalLine[i];
+  }
+  return { macdLine, signalLine, macdHists };
+}
+function computeEmaArray(prices, span) {
+  const ema = new Array(prices.length).fill(0);
+  if (prices.length === 0) return ema;
+  const mult = 2 / (span + 1);
+  ema[0] = prices[0];
+  for (let i = 1; i < prices.length; i++) {
+    ema[i] = (prices[i] - ema[i - 1]) * mult + ema[i - 1];
+  }
+  return ema;
+}
+function computeBollingerBandsWidthArray(prices, period, k) {
+  const bbWidth = new Array(prices.length).fill(0);
+  if (prices.length < period) return bbWidth;
+  for (let i = period - 1; i < prices.length; i++) {
+    const window = prices.slice(i - period + 1, i + 1);
+    const mean = window.reduce((acc, v) => acc + v, 0) / period;
+    const variance = window.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / period;
+    const sd = Math.sqrt(variance);
+    bbWidth[i] = mean === 0 ? 0 : 2 * k * sd / mean;
+  }
+  return bbWidth;
+}
+function computeAtrArray(highs, lows, closes, period) {
+  const atr = new Array(closes.length).fill(0);
+  if (closes.length === 0) return atr;
+  const tr = [];
+  tr.push(highs[0] - lows[0]);
+  for (let i = 1; i < closes.length; i++) {
+    const tr1 = highs[i] - lows[i];
+    const tr2 = Math.abs(highs[i] - closes[i - 1]);
+    const tr3 = Math.abs(lows[i] - closes[i - 1]);
+    tr.push(Math.max(tr1, tr2, tr3));
+  }
+  return computeEmaArray(tr, period);
+}
+function computeAdxArray(highs, lows, closes, period) {
+  const adx = new Array(closes.length).fill(0);
+  if (closes.length < period) return adx;
+  const tr = [];
+  const plusDm = [];
+  const minusDm = [];
+  tr.push(highs[0] - lows[0]);
+  plusDm.push(0);
+  minusDm.push(0);
+  for (let i = 1; i < closes.length; i++) {
+    const trVal = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    );
+    tr.push(trVal);
+    const dH = highs[i] - highs[i - 1];
+    const dL = lows[i - 1] - lows[i];
+    plusDm.push(dH > dL && dH > 0 ? dH : 0);
+    minusDm.push(dL > dH && dL > 0 ? dL : 0);
+  }
+  let trSum = tr.slice(0, period).reduce((a, b) => a + b, 0);
+  let pDmSum = plusDm.slice(0, period).reduce((a, b) => a + b, 0);
+  let mDmSum = minusDm.slice(0, period).reduce((a, b) => a + b, 0);
+  const dx = [];
+  let pDi = trSum > 0 ? 100 * (pDmSum / trSum) : 0;
+  let mDi = trSum > 0 ? 100 * (mDmSum / trSum) : 0;
+  dx.push(pDi + mDi === 0 ? 0 : 100 * (Math.abs(pDi - mDi) / (pDi + mDi)));
+  for (let i = period; i < closes.length; i++) {
+    trSum = trSum - trSum / period + tr[i];
+    pDmSum = pDmSum - pDmSum / period + plusDm[i];
+    mDmSum = mDmSum - mDmSum / period + minusDm[i];
+    pDi = trSum > 0 ? 100 * (pDmSum / trSum) : 0;
+    mDi = trSum > 0 ? 100 * (mDmSum / trSum) : 0;
+    const dxVal = pDi + mDi === 0 ? 0 : 100 * (Math.abs(pDi - mDi) / (pDi + mDi));
+    dx.push(dxVal);
+  }
+  const adxEma = computeEmaArray(dx, period);
+  for (let i = 0; i < adxEma.length; i++) {
+    if (i + period < adx.length) {
+      adx[i + period] = adxEma[i];
+    }
+  }
+  return adx;
+}
+
 // server.ts
 import_dotenv.default.config();
 var app = (0, import_express.default)();
@@ -1413,126 +1535,6 @@ app.post("/api/backtest", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-function computeRsiArray(prices, period) {
-  const rsi = new Array(prices.length).fill(50);
-  if (prices.length < period) return rsi;
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const diff = prices[i] - prices[i - 1];
-    if (diff > 0) {
-      gains += diff;
-    } else {
-      losses -= diff;
-    }
-  }
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  for (let i = period + 1; i < prices.length; i++) {
-    const diff = prices[i] - prices[i - 1];
-    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
-    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return rsi;
-}
-function computeMacdArray(prices, fast, slow, signal) {
-  const macdLine = new Array(prices.length).fill(0);
-  const signalLine = new Array(prices.length).fill(0);
-  const macdHists = new Array(prices.length).fill(0);
-  const emaFast = computeEmaArray(prices, fast);
-  const emaSlow = computeEmaArray(prices, slow);
-  for (let i = 0; i < prices.length; i++) {
-    macdLine[i] = emaFast[i] - emaSlow[i];
-  }
-  const sigEma = computeEmaArray(macdLine, signal);
-  for (let i = 0; i < prices.length; i++) {
-    signalLine[i] = sigEma[i];
-    macdHists[i] = macdLine[i] - signalLine[i];
-  }
-  return { macdLine, signalLine, macdHists };
-}
-function computeEmaArray(prices, span) {
-  const ema = new Array(prices.length).fill(0);
-  if (prices.length === 0) return ema;
-  const mult = 2 / (span + 1);
-  ema[0] = prices[0];
-  for (let i = 1; i < prices.length; i++) {
-    ema[i] = (prices[i] - ema[i - 1]) * mult + ema[i - 1];
-  }
-  return ema;
-}
-function computeBollingerBandsWidthArray(prices, period, k) {
-  const bbWidth = new Array(prices.length).fill(0);
-  if (prices.length < period) return bbWidth;
-  for (let i = period - 1; i < prices.length; i++) {
-    const window = prices.slice(i - period + 1, i + 1);
-    const mean = window.reduce((acc, v) => acc + v, 0) / period;
-    const variance = window.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / period;
-    const sd = Math.sqrt(variance);
-    bbWidth[i] = mean === 0 ? 0 : 2 * k * sd / mean;
-  }
-  return bbWidth;
-}
-function computeAtrArray(highs, lows, closes, period) {
-  const atr = new Array(closes.length).fill(0);
-  if (closes.length === 0) return atr;
-  const tr = [];
-  tr.push(highs[0] - lows[0]);
-  for (let i = 1; i < closes.length; i++) {
-    const tr1 = highs[i] - lows[i];
-    const tr2 = Math.abs(highs[i] - closes[i - 1]);
-    const tr3 = Math.abs(lows[i] - closes[i - 1]);
-    tr.push(Math.max(tr1, tr2, tr3));
-  }
-  return computeEmaArray(tr, period);
-}
-function computeAdxArray(highs, lows, closes, period) {
-  const adx = new Array(closes.length).fill(0);
-  if (closes.length < period) return adx;
-  const tr = [];
-  const plusDm = [];
-  const minusDm = [];
-  tr.push(highs[0] - lows[0]);
-  plusDm.push(0);
-  minusDm.push(0);
-  for (let i = 1; i < closes.length; i++) {
-    const trVal = Math.max(
-      highs[i] - lows[i],
-      Math.abs(highs[i] - closes[i - 1]),
-      Math.abs(lows[i] - closes[i - 1])
-    );
-    tr.push(trVal);
-    const dH = highs[i] - highs[i - 1];
-    const dL = lows[i - 1] - lows[i];
-    plusDm.push(dH > dL && dH > 0 ? dH : 0);
-    minusDm.push(dL > dH && dL > 0 ? dL : 0);
-  }
-  let trSum = tr.slice(0, period).reduce((a, b) => a + b, 0);
-  let pDmSum = plusDm.slice(0, period).reduce((a, b) => a + b, 0);
-  let mDmSum = minusDm.slice(0, period).reduce((a, b) => a + b, 0);
-  const dx = [];
-  let pDi = trSum > 0 ? 100 * (pDmSum / trSum) : 0;
-  let mDi = trSum > 0 ? 100 * (mDmSum / trSum) : 0;
-  dx.push(pDi + mDi === 0 ? 0 : 100 * (Math.abs(pDi - mDi) / (pDi + mDi)));
-  for (let i = period; i < closes.length; i++) {
-    trSum = trSum - trSum / period + tr[i];
-    pDmSum = pDmSum - pDmSum / period + plusDm[i];
-    mDmSum = mDmSum - mDmSum / period + minusDm[i];
-    pDi = trSum > 0 ? 100 * (pDmSum / trSum) : 0;
-    mDi = trSum > 0 ? 100 * (mDmSum / trSum) : 0;
-    const dxVal = pDi + mDi === 0 ? 0 : 100 * (Math.abs(pDi - mDi) / (pDi + mDi));
-    dx.push(dxVal);
-  }
-  const adxEma = computeEmaArray(dx, period);
-  for (let i = 0; i < adxEma.length; i++) {
-    if (i + period < adx.length) {
-      adx[i + period] = adxEma[i];
-    }
-  }
-  return adx;
-}
 async function bootstrap() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({

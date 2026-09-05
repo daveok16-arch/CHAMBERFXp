@@ -41,9 +41,11 @@ class DataIngestor:
         for url in urls:
             try:
                 candles = []
-                start_ms = None
+                end_ms = None
                 while len(candles) < limit:
-                    page_url = url + (f"&startTime={int(start_ms)}" if start_ms else "")
+                    # Binance public klines cap at 1000/request; page backwards with
+                    # endTime (honored by both global and US mirrors) to fetch older bars.
+                    page_url = url + (f"&endTime={int(end_ms)}" if end_ms else "")
                     req = urllib.request.Request(page_url, headers={"User-Agent": "Mozilla/5.0"})
                     with urllib.request.urlopen(req, timeout=8) as response:
                         data = json.loads(response.read().decode())
@@ -59,12 +61,12 @@ class DataIngestor:
                             "close": float(item[4]),
                             "volume": float(item[5])
                         })
-                    if start_ms is not None:
-                        batch = batch[1:]
+                    if end_ms is not None:
+                        batch = batch[:-1]  # drop overlapping candle with previous (newer) page
                     candles = batch + candles
                     if len(data) < 1000:
                         break
-                    start_ms = int(data[0][0])
+                    end_ms = int(data[0][0]) - 1  # earliest open on this page -> fetch older
                 df = pd.DataFrame(candles)
                 df.set_index("timestamp", inplace=True)
                 df = df[~df.index.duplicated(keep="last")].sort_index()
