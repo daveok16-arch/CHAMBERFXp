@@ -1,0 +1,65 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "HTTP Requests / sec",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total[5m]))", "legendFormat": "req/s" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Request Duration (ms)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "avg(http_request_duration_ms)", "legendFormat": "avg" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "Active Signals",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "reconciler_active_signals", "legendFormat": "active" }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 }
+    },
+    {
+      "title": "Signal Events",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(signal_events_total[15m])) by (kind)", "legendFormat": "{{kind}}" }
+      ],
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 8 }
+    },
+    {
+      "title": "Engine Reachable",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "engine_reachable", "legendFormat": "reachable" }
+      ],
+      "gridPos": { "h": 6, "w": 6, "x": 15, "y": 8 }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["chamberfx"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "ChamberFX Overview",
+  "uid": "chamberfx-overview",
+  "version": 1,
+  "weekStart": ""
+}

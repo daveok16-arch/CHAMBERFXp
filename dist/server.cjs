@@ -894,11 +894,7 @@ var ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 function requestId(req, res, next) {
   const id = req.headers["x-request-id"] || import_crypto.default.randomBytes(6).toString("hex");
   res.setHeader("x-request-id", id);
-  const start = Date.now();
-  res.on("finish", () => {
-    const ms = Date.now() - start;
-    console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} ${ms}ms id=${id}`);
-  });
+  req._requestId = id;
   next();
 }
 function requireAdmin(req, res, next) {
@@ -945,6 +941,68 @@ async function engineStatus() {
   }
 }
 
+// server/metrics.ts
+var registry = /* @__PURE__ */ new Map();
+function increment(name, help, labels = {}, by = 1) {
+  const key = Object.entries(labels).map(([k, v]) => `${k}="${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",");
+  const labelStr = key ? `{${key}}` : "";
+  if (!registry.has(name)) registry.set(name, { help, type: "counter", values: /* @__PURE__ */ new Map() });
+  const entry = registry.get(name);
+  entry.values.set(labelStr, (entry.values.get(labelStr) || 0) + by);
+}
+function setGauge(name, help, value, labels = {}) {
+  const key = Object.entries(labels).map(([k, v]) => `${k}="${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",");
+  const labelStr = key ? `{${key}}` : "";
+  if (!registry.has(name)) registry.set(name, { help, type: "gauge", values: /* @__PURE__ */ new Map() });
+  registry.get(name).values.set(labelStr, value);
+}
+function observeHttp(method, path3, status, durationMs) {
+  increment("http_requests_total", "Total HTTP requests", { method, path: path3, status });
+  increment("http_request_duration_ms", "HTTP request duration in milliseconds", { method, path: path3 }, durationMs);
+}
+function countSignalEvent(kind, symbol = "unknown") {
+  increment("signal_events_total", "Signal lifecycle events", { kind, symbol });
+}
+function observeReconciler(scanned, active, ok) {
+  setGauge("reconciler_scanned_assets", "Assets scanned in last reconciler pass", scanned);
+  setGauge("reconciler_active_signals", "Active signals in store", active);
+  setGauge("reconciler_last_pass_ok", "Whether the last reconciler pass succeeded", ok ? 1 : 0);
+}
+function observeEngineHealth(reachable, modelVersion) {
+  setGauge("engine_reachable", "Whether the Python engine service is reachable", reachable ? 1 : 0);
+  if (modelVersion) setGauge("engine_model_version_info", "Trained model version", 1, { version: modelVersion });
+}
+function renderMetrics() {
+  const lines = [];
+  for (const [name, entry] of registry) {
+    lines.push(`# HELP ${name} ${entry.help}`);
+    lines.push(`# TYPE ${name} ${entry.type}`);
+    for (const [labels, value] of entry.values) {
+      lines.push(`${name}${labels} ${value}`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
+// server/logger.ts
+function emit(level, msg, fields = {}) {
+  const line = JSON.stringify({
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    level,
+    msg,
+    ...fields
+  });
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+}
+var log = {
+  info: (msg, fields) => emit("info", msg, fields),
+  warn: (msg, fields) => emit("warn", msg, fields),
+  error: (msg, fields) => emit("error", msg, fields),
+  debug: (msg, fields) => emit("debug", msg, fields)
+};
+
 // server.ts
 import_dotenv.default.config();
 var app = (0, import_express.default)();
@@ -959,8 +1017,20 @@ var aiClient = process.env.GEMINI_API_KEY ? new import_genai.GoogleGenAI({
 }) : null;
 app.use(import_express.default.json());
 app.use(requestId);
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path3 = req.originalUrl.split("?")[0];
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    const status = res.statusCode;
+    observeHttp(req.method, path3, status, ms);
+    log.info("request", { id: req._requestId, method: req.method, path: path3, status, durationMs: ms });
+  });
+  next();
+});
 var activePythonProcess = null;
 var pythonLogsBuffer = ["[System] Console initialized. Ready to launch the Python Ingestion & ML Engine."];
+var reconcilerLastResult = null;
 function runPythonQuery(queryString) {
   return new Promise((resolve, reject) => {
     const escapedQuery = queryString.replace(/'/g, "'\\''");
@@ -1022,6 +1092,21 @@ app.get("/api/python/logs", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json(healthInfo());
 });
+app.get("/metrics", (req, res) => {
+  res.setHeader("Content-Type", "text/plain; version=0.0.4");
+  res.send(renderMetrics());
+});
+app.get("/api/ready", async (req, res) => {
+  const engine = await engineStatus();
+  const signals = await getSignals().catch(() => null);
+  const ready = {
+    store: signals !== null,
+    engine: engine !== null,
+    reconciler: reconcilerLastResult !== null,
+    ts: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  res.status(ready.store ? 200 : 503).json(ready);
+});
 app.get("/api/events", (req, res) => {
   sseConnect(req, res);
 });
@@ -1050,6 +1135,7 @@ app.delete("/api/signals", requireAdmin, async (req, res) => {
 });
 app.get("/api/python/status", async (req, res) => {
   const st = await engineStatus();
+  observeEngineHealth(st !== null, st?.model?.version);
   if (st) {
     res.json({ engine: true, ...st });
     return;
@@ -2175,7 +2261,19 @@ async function bootstrap() {
     }
   }, 3e4, (signals, generated, closed, expired) => {
     broadcastSignals(signals, generated, closed, expired);
+    if (generated) countSignalEvent("generated", signals[0]?.symbol);
+    if (expired) countSignalEvent("expired");
+    if (closed) countSignalEvent("closed");
   });
+  const updateReconcilerMetric = () => {
+    const r = reconciler.lastResult();
+    reconcilerLastResult = r;
+    if (r) {
+      observeReconciler(r.scanned, r.totalActive, true);
+    }
+  };
+  setInterval(updateReconcilerMetric, 3e4);
+  updateReconcilerMetric();
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`\u26A1 Express Server booted on port ${PORT}`);
     console.log(`[server] Express server successfully initialized on port ${PORT}`);

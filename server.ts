@@ -20,6 +20,8 @@ import {
   requestId, requireAdmin, healthInfo, fetchWithTimeout, ADMIN_TOKEN,
 } from "./server/hardening";
 import { engineFetch, engineAlive, engineStatus } from "./server/engineProxy";
+import { observeHttp, countSignalEvent, observeReconciler, observeEngineHealth, renderMetrics } from "./server/metrics";
+import { log } from "./server/logger";
 
 dotenv.config();
 
@@ -41,9 +43,23 @@ const aiClient = process.env.GEMINI_API_KEY
 app.use(express.json());
 app.use(requestId);
 
+// Instrumentation: metrics + structured request log
+app.use((req, res, next) => {
+  const start = Date.now();
+  const path = req.originalUrl.split("?")[0];
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    const status = res.statusCode;
+    observeHttp(req.method, path, status, ms);
+    log.info("request", { id: (req as any)._requestId, method: req.method, path, status, durationMs: ms });
+  });
+  next();
+});
+
 // Buffer to store active running python CLI session logs
 let activePythonProcess: any = null;
 let pythonLogsBuffer: string[] = ["[System] Console initialized. Ready to launch the Python Ingestion & ML Engine."];
+let reconcilerLastResult: any = null;
 
 // Utility to run a python command and return JSON parsed output securely
 function runPythonQuery(queryString: string): Promise<any> {
@@ -125,6 +141,25 @@ app.get("/api/health", (req, res) => {
   res.json(healthInfo());
 });
 
+// API: Prometheus metrics
+app.get("/metrics", (req, res) => {
+  res.setHeader("Content-Type", "text/plain; version=0.0.4");
+  res.send(renderMetrics());
+});
+
+// API: Readiness (store + engine + reconciler status)
+app.get("/api/ready", async (req, res) => {
+  const engine = await engineStatus();
+  const signals = await getSignals().catch(() => null);
+  const ready = {
+    store: signals !== null,
+    engine: engine !== null,
+    reconciler: reconcilerLastResult !== null,
+    ts: new Date().toISOString(),
+  };
+  res.status(ready.store ? 200 : 503).json(ready);
+});
+
 // API: Server-Sent Events (live signal push)
 app.get("/api/events", (req, res) => {
   sseConnect(req, res);
@@ -162,6 +197,7 @@ app.delete("/api/signals", requireAdmin, async (req, res) => {
 // reachable; falls back to the legacy direct spawn otherwise.
 app.get("/api/python/status", async (req, res) => {
   const st = await engineStatus();
+  observeEngineHealth(st !== null, st?.model?.version);
   if (st) {
     res.json({ engine: true, ...st });
     return;
@@ -1487,7 +1523,19 @@ async function bootstrap() {
     }
   }, 30000, (signals, generated, closed, expired) => {
     broadcastSignals(signals, generated, closed, expired);
+    if (generated) countSignalEvent("generated", signals[0]?.symbol);
+    if (expired) countSignalEvent("expired");
+    if (closed) countSignalEvent("closed");
   });
+  const updateReconcilerMetric = () => {
+    const r = reconciler.lastResult();
+    reconcilerLastResult = r;
+    if (r) {
+      observeReconciler(r.scanned, r.totalActive, true);
+    }
+  };
+  setInterval(updateReconcilerMetric, 30000);
+  updateReconcilerMetric();
 
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`⚡ Express Server booted on port ${PORT}`);

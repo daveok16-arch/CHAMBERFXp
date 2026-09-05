@@ -7,11 +7,7 @@ export const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 export function requestId(req: Request, res: Response, next: NextFunction) {
   const id = req.headers["x-request-id"] || crypto.randomBytes(6).toString("hex");
   res.setHeader("x-request-id", id);
-  const start = Date.now();
-  res.on("finish", () => {
-    const ms = Date.now() - start;
-    console.log(`[req] ${req.method} ${req.originalUrl} -> ${res.statusCode} ${ms}ms id=${id}`);
-  });
+  (req as any)._requestId = id;
   next();
 }
 
