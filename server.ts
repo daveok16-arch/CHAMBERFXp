@@ -427,6 +427,7 @@ async function getAssetTechnicalScan(symbol: string): Promise<any> {
   let dataSource: string = isCrypto ? "Binance API (Live)" : "Yahoo Finance (Live)";
   let isStale = false;
   let staleReason = "";
+  let isDelayedFeed = false;
 
   // Rate-limit cool-down check
   if (now < apiBackoffs[apiService].coolDownUntil) {
@@ -574,6 +575,11 @@ async function getAssetTechnicalScan(symbol: string): Promise<any> {
       currentPrice = meta.regularMarketPrice;
       const prevClose = meta.chartPreviousClose || currentPrice;
       changePct = prevClose ? ((currentPrice - prevClose) / prevClose) * 100 : 0;
+      // Yahoo quotes can be delayed up to 15 min behind real-world markets.
+      // Surface that honestly so the UI can mark the pair stale instead of.
+      // showing the delayed quote as live.
+      const quoteAgeSec = meta.regularMarketTime ? (Date.now() / 1000 - meta.regularMarketTime) : 0;
+      const isDelayedFeed = quoteAgeSec >   900;
       
       const ohlc = data.indicators?.quote?.[0];
       const rawCloses = ohlc?.close || [];
@@ -820,8 +826,8 @@ async function getAssetTechnicalScan(symbol: string): Promise<any> {
         bearishIndicators
       },
       dataSource,
-      isStale: false,
-      staleReason: ""
+      isStale: isDelayedFeed ?? false,
+      staleReason: isDelayedFeed ? "Delayed exchange quote (>15min behind market)" : ""
     };
 
     memoryScanCache[cleanSymbol] = {

@@ -1391,6 +1391,7 @@ async function getAssetTechnicalScan(symbol) {
   let dataSource = isCrypto ? "Binance API (Live)" : "Yahoo Finance (Live)";
   let isStale = false;
   let staleReason = "";
+  let isDelayedFeed = false;
   if (now < apiBackoffs[apiService].coolDownUntil) {
     if (memoryScanCache[cleanSymbol]) {
       return {
@@ -1520,6 +1521,8 @@ async function getAssetTechnicalScan(symbol) {
       currentPrice = meta.regularMarketPrice;
       const prevClose = meta.chartPreviousClose || currentPrice;
       changePct = prevClose ? (currentPrice - prevClose) / prevClose * 100 : 0;
+      const quoteAgeSec = meta.regularMarketTime ? Date.now() / 1e3 - meta.regularMarketTime : 0;
+      const isDelayedFeed2 = quoteAgeSec > 900;
       const ohlc = data.indicators?.quote?.[0];
       const rawCloses = ohlc?.close || [];
       const rawHighs = ohlc?.high || [];
@@ -1709,8 +1712,8 @@ async function getAssetTechnicalScan(symbol) {
         bearishIndicators
       },
       dataSource,
-      isStale: false,
-      staleReason: ""
+      isStale: isDelayedFeed ?? false,
+      staleReason: isDelayedFeed ? "Delayed exchange quote (>15min behind market)" : ""
     };
     memoryScanCache[cleanSymbol] = {
       data: resultObj,

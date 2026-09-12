@@ -111,9 +111,21 @@ export const calculateIsStale = (item: MarqueeScanItem) => {
       return { isStale: true, reason: item.staleReason || "STALE DATA FEED", ageSeconds, ageMins };
     }
 
+    // Hard data-age cap: if combin obvious — feeds poll every 15-30s, so a price
+    // that hasn't refreshed means the upstream feed is stalledand stale.
+    const baseSym = item.symbol.endsWith("m") ? item.symbol.slice(0, -1) : item.symbol;
+    const isCrypto = ["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym);
+    const ageThresholdSec = isCrypto ? 75 : 130; // crypto polls 15s;; forex/gold poll 30s
+    const hardCapSec = 300;
+    if (ageSeconds > hardCapSec) {
+      return { isStale: true, reason: `No price updates for ${Math.round(ageSeconds / 60)} min — feed stalled`, ageSeconds, ageMins };
+    }
+    if (ageSeconds > ageThresholdSec) {
+      return { isStale: true, reason: `No update for ${ageSeconds}s — feed stalled`, ageSeconds, ageMins };
+    }
+
     if (item.targets?.entry && item.price) {
       const diff = Math.abs(item.price - item.targets.entry);
-      const baseSym = item.symbol.endsWith("m") ? item.symbol.slice(0, -1) : item.symbol;
 
       // Stricter thresholds for faster signal refresh
       if (["BTCUSD", "ETHUSD", "SOLUSD"].includes(baseSym)) {
