@@ -657,6 +657,7 @@ function reconcileSignals(prev, scans) {
           pnlPct
         };
         updated.splice(existingIdx, 1);
+        updatePairOnSignalClosed(sym, "EXPIRED");
         expired++;
       }
     }
@@ -760,7 +761,7 @@ function reconcileSignals(prev, scans) {
           resolvedAt: nowIso,
           resultPips: pipsOrPoints
         };
-        if (newStatus === "HIT TP" || newStatus === "HIT SL") {
+        if (newStatus === "HIT TP" || newStatus === "HIT SL" || newStatus === "EXPIRED") {
           updatePairOnSignalClosed(sym, newStatus);
         }
         closed++;
@@ -2338,9 +2339,17 @@ async function bootstrap() {
     console.log(`[server] Express server successfully initialized on port ${PORT}`);
     console.log(`[server] Signal reconciler started (30s interval).`);
   });
+  const PORT2 = process.env.PORT2 ? parseInt(process.env.PORT2, 10) : -1;
+  let server2 = null;
+  if (PORT2 > 0 && PORT2 !== PORT) {
+    server2 = app.listen(PORT2, "0.0.0.0", () => {
+      console.log(`\u26A1 Express Server additionally binding :${PORT2}`);
+    });
+  }
   const shutdown = () => {
     reconciler.stop();
     stopEngine();
+    server2?.close();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);

@@ -72,7 +72,8 @@ def load_latest_model() -> Dict[str, Any]:
     artifact = None
     if os.path.exists(LATEST_LINK):
         try:
-            artifact = open(LATEST_LINK, encoding="utf-8").read().strip()
+            with open(LATEST_LINK, encoding="utf-8") as f:
+                artifact = f.read().strip()
         except Exception:
             artifact = None
     if not artifact or not os.path.exists(os.path.join(MODELS_DIR, artifact)):

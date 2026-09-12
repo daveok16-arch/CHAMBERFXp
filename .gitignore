@@ -17,3 +17,4 @@ engine/models/latest
 engine/models/latest_metadata.json
 *.db-shm
 *.db-wal
+ensemble_model.pkl

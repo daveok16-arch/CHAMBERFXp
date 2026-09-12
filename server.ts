@@ -1545,9 +1545,20 @@ async function bootstrap() {
     console.log(`[server] Signal reconciler started (30s interval).`);
   });
 
+  // Some runtimes (e.g. the multi-host All Hands pod) expose the app on an
+  // additional ingress port. Bind both so a second work host URL works too.
+  const PORT2 = process.env.PORT2 ? parseInt(process.env.PORT2, 10) : -1;
+  let server2: ReturnType<typeof app.listen> | null = null;
+  if (PORT2 > 0 && PORT2 !== PORT) {
+    server2 = app.listen(PORT2, "0.0.0.0", () => {
+      console.log(`⚡ Express Server additionally binding :${PORT2}`);
+    });
+  }
+
   const shutdown = () => {
     reconciler.stop();
     stopEngine();
+    server2?.close();
     server.close(() => process.exit(0));
   };
   process.on("SIGINT", shutdown);

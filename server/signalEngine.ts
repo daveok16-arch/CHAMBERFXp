@@ -196,6 +196,7 @@ export function reconcileSignals(
           pnlPct,
         };
         updated.splice(existingIdx, 1);
+        updatePairOnSignalClosed(sym, "EXPIRED");
         expired++;
       }
     }
@@ -318,7 +319,7 @@ export function reconcileSignals(
           resultPips: pipsOrPoints,
         };
 
-        if (newStatus === "HIT TP" || newStatus === "HIT SL") {
+        if (newStatus === "HIT TP" || newStatus === "HIT SL" || newStatus === "EXPIRED") {
           updatePairOnSignalClosed(sym, newStatus);
         }
         closed++;
